@@ -28,7 +28,13 @@ logger = get_logger(__name__)
 class FileFetcher(Protocol):
     """Downloads an attachment by provider file id."""
 
-    async def fetch(self, file_id: str) -> FileData: ...
+    async def fetch(
+        self,
+        file_id: str,
+        *,
+        mime_type: str | None = None,
+        filename: str | None = None,
+    ) -> FileData: ...
 
 
 class SpeechToText(Protocol):
@@ -59,7 +65,7 @@ class IngestionPipeline:
     ) -> MediaIngestionResult:
         """Downloads and parses one attachment, returning a bounded result."""
         try:
-            data = await self.fetcher.fetch(file_id)
+            data = await self.fetcher.fetch(file_id, mime_type=mime_type, filename=filename)
         except Exception as exc:  # noqa: BLE001 - network/provider failures are graceful
             logger.warning("media_download_failed", file_id=file_id, error=str(exc))
             return MediaIngestionResult(
@@ -74,6 +80,15 @@ class IngestionPipeline:
                 error_code="too_large",
                 meta={"file_id": file_id, "size": len(data.raw)},
             )
+
+        # Some fetchers (e.g. Telegram) return raw bytes without mime/filename;
+        # classification must fall back to the request-level attributes.
+        data = FileData(
+            raw=data.raw,
+            size=data.size or len(data.raw),
+            mime_type=data.mime_type or mime_type,
+            filename=data.filename or filename,
+        )
 
         kind = data.kind
         if kind is DocumentKind.UNSUPPORTED:

@@ -79,9 +79,12 @@ async def test_media_failure_marks_document_failed(session_factory):
         assert len(docs) == 1
         assert docs[0].status is DocumentStatus.FAILED
         assert docs[0].doc_meta["error_code"] == "stt"
+        convos = await uow.conversations.list_for_user(user.id)
+        messages = await uow.conversations.list_messages(convos[0].id)
+        assert messages[0].media_meta["error_code"] == "stt"
 
 
-async def test_media_ingestor_exception_does_not_crash_reply(session_factory):
+async def test_media_ingestor_exception_marks_document_failed(session_factory):
     async def ingestor(msg):
         raise RuntimeError("boom")
 
@@ -94,6 +97,11 @@ async def test_media_ingestor_exception_does_not_crash_reply(session_factory):
     async with uow:
         result = await uow.session.execute(select(OutboundMessage))
         assert len(result.scalars().all()) == 1
+        user = await uow.users.get_by_telegram_id(888)
+        docs = await uow.documents.list_for_user(user.id)
+        assert len(docs) == 1
+        assert docs[0].status is DocumentStatus.FAILED
+        assert docs[0].doc_meta["error_code"] == "internal"
 
 
 async def test_plain_text_never_calls_ingestor(session_factory):

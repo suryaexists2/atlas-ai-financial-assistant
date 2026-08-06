@@ -22,18 +22,25 @@ class TelegramFileFetcher:
         self._bot = bot
         self._max_bytes = max_bytes
 
-    async def fetch(self, file_id: str) -> FileData:
+    async def fetch(
+        self,
+        file_id: str,
+        *,
+        mime_type: str | None = None,
+        filename: str | None = None,
+    ) -> FileData:
         file = await self._bot.get_file(file_id)
         if file.file_size is not None and file.file_size > self._max_bytes:
             raise TooLargeError(f"attachment too large ({file.file_size} bytes)")
         buffer = io.BytesIO()
         if not file.file_path:
-            raise ValueError("telegram did not return a downloadable file path")
+            raise ValueError("no downloadable file path")
         await self._bot.download_file(file.file_path, destination=buffer)
         raw = buffer.getvalue()
         return FileData(
             raw=raw,
-            mime_type=None,
+            mime_type=mime_type,
+            filename=filename,
             size=len(raw),
         )
 

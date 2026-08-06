@@ -202,19 +202,17 @@ class UpdateProcessor:
         message_id: uuid.UUID,
     ) -> None:
         """Downloads, parses, persists the document, and enriches the stored
-        user message so the agent sees the extracted content. Failures degrade to
-        a graceful message (or the context placeholder) rather than an error."""
-        if self._media_ingestor is None:
-            return
-        try:
-            result = await self._media_ingestor(message)
-        except Exception:  # noqa: BLE001 - ingestion must never crash the reply path
-            logger.exception("media_ingest_failed", media_type=message.media_type)
+        user message so the agent sees the extracted content.
+
+        Failures are never silent: an extraction error or an unexpected
+        exception leaves a `documents` row (status FAILED) and an entry in the
+        message's `media_meta`, so operators can see exactly what happened and
+        the reply path still runs gracefully.
+        """
+        user = await uow.users.get_by_telegram_id(message.telegram_user_id)
+        if user is None or self._media_ingestor is None:
             return
 
-        user = await uow.users.get_by_telegram_id(message.telegram_user_id)
-        if user is None:
-            return
         base_meta: dict[str, Any] = {
             "file_id": message.media_file_id,
             "mime_type": message.media_mime_type,
@@ -222,28 +220,31 @@ class UpdateProcessor:
             "kind": message.media_type,
             "download_size": message.media_file_size,
         }
+        try:
+            result = await self._media_ingestor(message)
+        except Exception as exc:  # noqa: BLE001 - ingestion must never crash the reply path
+            logger.exception("media_ingest_failed", media_type=message.media_type)
+            base_meta.update(error="ingestion raised unexpectedly", error_code="internal")
+            base_meta["error_detail"] = str(exc)[:500]
+            await self._fail_document(uow, user.id, base_meta, message, message_id)
+            return
 
         if result.error is not None:
-            base_meta["error"] = result.error
-            base_meta["error_code"] = result.error_code
-            await uow.documents.update_status(
-                await self._doc_record(uow, user.id, base_meta, message),
-                DocumentStatus.FAILED,
-                **{"error": result.error, "error_code": result.error_code},
-            )
+            base_meta.update(error=result.error, error_code=result.error_code)
+            await self._fail_document(uow, user.id, base_meta, message, message_id)
             return
 
         document = result.document
         if document is None:
+            base_meta.update(error="nothing was extracted", error_code="empty")
+            await self._fail_document(uow, user.id, base_meta, message, message_id)
             return
+
         kind = document.kind.value
-        base_meta.update(
-            kind=kind,
-            chunk_count=document.chunk_count,
-            truncated=document.truncated,
-        )
+        base_meta.update(kind=kind, chunk_count=document.chunk_count, truncated=document.truncated)
+        document_row = await self._doc_record(uow, user.id, base_meta, message)
         await uow.documents.update_status(
-            await self._doc_record(uow, user.id, base_meta, message),
+            document_row,
             DocumentStatus.PROCESSED,
             **{
                 "kind": kind,
@@ -255,11 +256,10 @@ class UpdateProcessor:
 
         display = result.content if result.content else document.text
         label = _KIND_LABEL.get(message.media_type or kind, "[contents]")
-        content = (
-            f"{message.media_caption}\n\n{label}\n{display}"
-            if message.media_caption
-            else f"{label}\n{display}"
-        )
+        if message.media_caption:
+            content = f"{message.media_caption}\n\n{label}\n{display}"
+        else:
+            content = f"{label}\n{display}"
         await uow.conversations.update_message(
             message_id,
             content=content,
@@ -277,6 +277,31 @@ class UpdateProcessor:
             kind=kind,
             chars=len(display),
         )
+
+    async def _fail_document(
+        self,
+        uow: UnitOfWork,
+        user_id: uuid.UUID,
+        base_meta: dict[str, Any],
+        message: NormalizedMessage,
+        message_id: uuid.UUID,
+    ) -> None:
+        """Records a failed ingestion so it is never invisible."""
+        document_row = await self._doc_record(uow, user_id, base_meta, message)
+        await uow.documents.update_status(
+            document_row,
+            DocumentStatus.FAILED,
+            **{"error": base_meta.get("error"), "error_code": base_meta.get("error_code")},
+        )
+        await uow.conversations.update_message(
+            message_id,
+            media_meta={
+                "error": base_meta.get("error"),
+                "error_code": base_meta.get("error_code"),
+                "kind": base_meta.get("kind"),
+            },
+        )
+        await uow.commit()
 
     async def _doc_record(
         self,

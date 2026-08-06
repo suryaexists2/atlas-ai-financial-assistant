@@ -40,7 +40,7 @@ class FakeFetcher:
     def __init__(self, data: FileData) -> None:
         self._data = data
 
-    async def fetch(self, file_id: str) -> FileData:
+    async def fetch(self, file_id: str, *, mime_type=None, filename=None) -> FileData:
         self.requested = file_id
         return self._data
 
@@ -280,6 +280,23 @@ async def test_pipeline_voice_with_stt():
     assert "revenue growth" in result.document.text
 
 
+async def test_pipeline_kind_uses_request_mime_when_fetcher_drops_it():
+    """Regression: the Telegram downloader returns raw bytes without mime;
+    the pipeline must classify by the request's mime_type, not the FileData."""
+
+    class RawFetcher:
+        async def fetch(self, file_id, *, mime_type=None, filename=None):
+            assert mime_type == "audio/ogg"
+            return FileData(raw=b"audio-bytes", size=10)  # no mime, no filename
+
+    stt = FakeStt()
+    pipeline = make_pipeline(RawFetcher(), stt=stt)
+    result = await pipeline.process(file_id="v9", mime_type="audio/ogg", filename=None)
+    assert result.ok
+    assert result.document.kind is DocumentKind.VOICE
+    assert "revenue growth" in result.document.text
+
+
 async def test_pipeline_image_with_vision():
     data = FileData(raw=b"png", mime_type="image/png")
     pipeline = make_pipeline(FakeFetcher(data), vision=FakeVision())
@@ -290,7 +307,7 @@ async def test_pipeline_image_with_vision():
 
 async def test_pipeline_download_failure_graceful():
     class BoomFetcher:
-        async def fetch(self, file_id: str):
+        async def fetch(self, file_id: str, *, mime_type=None, filename=None):
             raise RuntimeError("network down")
 
     pipeline = make_pipeline(BoomFetcher())
