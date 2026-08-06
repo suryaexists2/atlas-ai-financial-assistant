@@ -67,7 +67,11 @@ class UpdateProcessor:
         in a background task so the webhook can ACK Telegram immediately instead
         of blocking on the LLM turn.
         """
-        update = types.Update.model_validate(payload)
+        try:
+            update = types.Update.model_validate(payload)
+        except Exception:  # noqa: BLE001 - invalid/odd payloads must not crash the webhook
+            logger.warning("update_validation_failed", update_id=payload.get("update_id"))
+            return False
 
         if update.edited_message is not None or update.message is None:
             logger.info("update_skipped_non_message", update_id=update.update_id)

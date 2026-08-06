@@ -110,6 +110,20 @@ async def test_fallback_reply_not_persisted_to_conversation(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_invalid_payload_returns_false(session_factory):
+    processor = make_processor(session_factory)
+    bad = tg_voice_update(chat_id=777, message_id=99)
+    del bad["message"]["voice"]["file_unique_id"]  # make it invalid per aiogram schema
+
+    assert await processor.process_update(bad, source="webhook", correlation_id="c-9") is False
+
+    uow = UnitOfWork(session_factory)
+    async with uow:
+        result = await uow.session.execute(select(func.count()).select_from(OutboundMessage))
+        assert result.scalar_one() == 0
+
+
+@pytest.mark.asyncio
 async def test_edited_update_never_reaches_processor(session_factory):
     processor = make_processor(session_factory)
     payload = tg_text_update(update_id=20, chat_id=777, message_id=40, text="edited")
