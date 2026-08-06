@@ -87,6 +87,15 @@ class ConversationRepository(abc.ABC):
     ) -> Message: ...
 
     @abc.abstractmethod
+    async def update_message(
+        self,
+        message_id: uuid.UUID,
+        *,
+        content: str | None = None,
+        media_meta: dict[str, Any] | None = None,
+    ) -> Message | None: ...
+
+    @abc.abstractmethod
     async def list_messages(self, conversation_id: uuid.UUID, limit: int = 50) -> list[Message]: ...
 
 

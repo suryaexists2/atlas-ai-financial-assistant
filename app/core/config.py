@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     sec_user_agent: str = "AtlasHackathon contact@example.com"
     finnhub_api_key: str | None = Field(default=None, repr=False)
 
+    # --- Media / file ingestion ---
+    file_max_bytes: int = 25_000_000
+    ingestion_max_chars: int = 120_000  # budget cap for extracted text per turn
+    ingestion_chunk_chars: int = 12_000  # chunk size for very large documents
+    ingestion_excerpt_chars: int = 8_000  # excerpt shown to the model per media message
+    stt_model: str = "openai/whisper-1"
+    vision_model: str = "openai/gpt-4o-mini"
+    stt_timeout_seconds: float = 90.0
+    vision_timeout_seconds: float = 60.0
+    media_download_timeout_seconds: float = 60.0
+
     # --- Agent Core ---
     agent_max_tool_rounds: int = 5
     agent_context_max_messages: int = 24

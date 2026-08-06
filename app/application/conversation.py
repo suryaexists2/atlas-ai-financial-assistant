@@ -50,12 +50,13 @@ async def get_or_create_active_conversation(uow: UnitOfWork, user_id: uuid.UUID)
 
 async def persist_incoming_message(
     uow: UnitOfWork, conversation_id: uuid.UUID, message: NormalizedMessage
-) -> None:
-    """Stores the normalized message in the conversation history."""
+) -> uuid.UUID:
+    """Stores the normalized message in the conversation history and returns
+    the persisted message id (so a later ingestion pass can enrich it)."""
     from app.domain.enums import ContentType
 
     content_type = ContentType(message.media_type) if message.is_media else ContentType.TEXT
-    await uow.conversations.add_message(
+    persisted = await uow.conversations.add_message(
         conversation_id,
         role=MessageRole.USER,
         content=message.combined_text,
@@ -65,6 +66,7 @@ async def persist_incoming_message(
                 "file_id": message.media_file_id,
                 "mime_type": message.media_mime_type,
                 "file_size": message.media_file_size,
+                "filename": message.media_filename,
                 "caption": message.media_caption,
             }
             if message.is_media
@@ -72,3 +74,4 @@ async def persist_incoming_message(
         ),
         correlation_id=message.correlation_id,
     )
+    return persisted.id

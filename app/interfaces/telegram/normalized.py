@@ -26,6 +26,7 @@ class NormalizedMessage(BaseModel):
     media_file_id: str | None = None
     media_mime_type: str | None = None
     media_file_size: int | None = None
+    media_filename: str | None = None
     media_caption: str | None = None
     received_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.UTC))
 

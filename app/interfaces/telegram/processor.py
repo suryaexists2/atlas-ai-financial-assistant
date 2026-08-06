@@ -16,8 +16,9 @@ from typing import Any, Awaitable, Callable
 from aiogram import types
 
 from app.application import conversation as conversation_service
+from app.application.ingestion.types import MediaIngestionResult
 from app.core.logging import get_logger
-from app.domain.enums import MessageRole
+from app.domain.enums import DocumentStatus, MessageRole
 from app.infrastructure.db.session import async_sessionmaker
 from app.infrastructure.db.uow import UnitOfWork
 from app.interfaces.telegram.normalized import NormalizedMessage
@@ -38,6 +39,15 @@ class ReplyContext:
 
 ReplyComposer = Callable[[ReplyContext], Awaitable[str | None]]
 
+# Turns a media message into a bounded extraction the reply layer can use.
+MediaIngestor = Callable[[NormalizedMessage], Awaitable[MediaIngestionResult]]
+
+_KIND_LABEL = {
+    "voice": "[voice transcript]",
+    "image": "[image contents]",
+    "document": "[document contents]",
+}
+
 
 class UpdateProcessor:
     def __init__(
@@ -47,11 +57,13 @@ class UpdateProcessor:
         *,
         echo_mode: bool = True,
         fallback_reply: str = "Sorry — I hit a temporary hiccup. Give me a moment and try again.",
+        media_ingestor: MediaIngestor | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._reply_composer = reply_composer
         self._echo_mode = echo_mode
         self._fallback_reply = fallback_reply
+        self._media_ingestor = media_ingestor
 
     async def process_update(
         self,
@@ -104,7 +116,9 @@ class UpdateProcessor:
             conversation_id: uuid.UUID = (
                 await conversation_service.get_or_create_active_conversation(uow, user_id)
             )
-            await conversation_service.persist_incoming_message(uow, conversation_id, normalized)
+            message_id = await conversation_service.persist_incoming_message(
+                uow, conversation_id, normalized
+            )
             await uow.commit()
 
         # 4) Reply through the outbox (never direct to Telegram here).
@@ -113,12 +127,12 @@ class UpdateProcessor:
 
         if background_reply:
             asyncio.create_task(
-                self._compose_and_enqueue(normalized, user_id, conversation_id),
+                self._compose_and_enqueue(normalized, user_id, conversation_id, message_id),
                 name=f"reply:{correlation_id[:12]}",
             )
         else:
             async with UnitOfWork(self._session_factory) as reply_uow:
-                await self._maybe_reply(reply_uow, normalized, user_id, conversation_id)
+                await self._maybe_reply(reply_uow, normalized, user_id, conversation_id, message_id)
         return True
 
     async def _compose_and_enqueue(
@@ -126,11 +140,12 @@ class UpdateProcessor:
         message: NormalizedMessage,
         user_id: uuid.UUID,
         conversation_id: uuid.UUID,
+        message_id: uuid.UUID,
     ) -> None:
         """Background reply path: compose on a fresh session, then persist only the
         outbound message (the LLM turn can be slow and must not hold the webhook)."""
         async with UnitOfWork(self._session_factory) as uow:
-            await self._maybe_reply(uow, message, user_id, conversation_id)
+            await self._maybe_reply(uow, message, user_id, conversation_id, message_id)
 
     async def _maybe_reply(
         self,
@@ -138,9 +153,12 @@ class UpdateProcessor:
         message: NormalizedMessage,
         user_id: uuid.UUID,
         conversation_id: uuid.UUID,
+        message_id: uuid.UUID | None = None,
     ) -> None:
         if not self._echo_mode:
             return
+        if message.is_media and message_id is not None:
+            await self._ingest_media(uow, message, message_id)
         reply_text: str | None = None
         try:
             reply_text = await self._reply_composer(
@@ -176,3 +194,103 @@ class UpdateProcessor:
                     correlation_id=message.correlation_id,
                 )
             logger.info("reply_enqueued", update_id=message.update_id)
+
+    async def _ingest_media(
+        self,
+        uow: UnitOfWork,
+        message: NormalizedMessage,
+        message_id: uuid.UUID,
+    ) -> None:
+        """Downloads, parses, persists the document, and enriches the stored
+        user message so the agent sees the extracted content. Failures degrade to
+        a graceful message (or the context placeholder) rather than an error."""
+        if self._media_ingestor is None:
+            return
+        try:
+            result = await self._media_ingestor(message)
+        except Exception:  # noqa: BLE001 - ingestion must never crash the reply path
+            logger.exception("media_ingest_failed", media_type=message.media_type)
+            return
+
+        user = await uow.users.get_by_telegram_id(message.telegram_user_id)
+        if user is None:
+            return
+        base_meta: dict[str, Any] = {
+            "file_id": message.media_file_id,
+            "mime_type": message.media_mime_type,
+            "filename": message.media_filename,
+            "kind": message.media_type,
+            "download_size": message.media_file_size,
+        }
+
+        if result.error is not None:
+            base_meta["error"] = result.error
+            base_meta["error_code"] = result.error_code
+            await uow.documents.update_status(
+                await self._doc_record(uow, user.id, base_meta, message),
+                DocumentStatus.FAILED,
+                **{"error": result.error, "error_code": result.error_code},
+            )
+            return
+
+        document = result.document
+        if document is None:
+            return
+        kind = document.kind.value
+        base_meta.update(
+            kind=kind,
+            chunk_count=document.chunk_count,
+            truncated=document.truncated,
+        )
+        await uow.documents.update_status(
+            await self._doc_record(uow, user.id, base_meta, message),
+            DocumentStatus.PROCESSED,
+            **{
+                "kind": kind,
+                "extracted_text": document.text,
+                "chunk_count": document.chunk_count,
+                "truncated": document.truncated,
+            },
+        )
+
+        display = result.content if result.content else document.text
+        label = _KIND_LABEL.get(message.media_type or kind, "[contents]")
+        content = (
+            f"{message.media_caption}\n\n{label}\n{display}"
+            if message.media_caption
+            else f"{label}\n{display}"
+        )
+        await uow.conversations.update_message(
+            message_id,
+            content=content,
+            media_meta={
+                "kind": kind,
+                "chunk_count": document.chunk_count,
+                "truncated": document.truncated,
+                "excerpt": display,
+            },
+        )
+        await uow.commit()
+        logger.info(
+            "media_ingested_and_linked",
+            media_type=message.media_type,
+            kind=kind,
+            chars=len(display),
+        )
+
+    async def _doc_record(
+        self,
+        uow: UnitOfWork,
+        user_id: uuid.UUID,
+        meta: dict[str, Any],
+        message: NormalizedMessage,
+    ):
+        """Creates a documents row (one per media message)."""
+        return await uow.documents.create(
+            user_id,
+            filename=meta.get("filename") or message.media_type or "attachment",
+            mime_type=meta.get("mime_type"),
+            size_bytes=meta.get("download_size"),
+            status=DocumentStatus.PENDING,
+            doc_meta={**meta, "conversation_id": str(message.correlation_id)},
+        )

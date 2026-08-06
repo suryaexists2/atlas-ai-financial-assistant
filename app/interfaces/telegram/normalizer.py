@@ -30,6 +30,7 @@ def normalize_update(
     media_file_id: str | None = None
     media_mime: str | None = None
     media_size: int | None = None
+    media_filename: str | None = None
     media_caption: str | None = None
 
     if msg.voice is not None:
@@ -52,6 +53,7 @@ def normalize_update(
         media_file_id = msg.document.file_id
         media_mime = msg.document.mime_type
         media_size = msg.document.file_size
+        media_filename = msg.document.file_name
         media_caption = msg.caption
         text = None
     elif text is None:
@@ -73,6 +75,7 @@ def normalize_update(
         media_file_id=media_file_id,
         media_mime_type=media_mime,
         media_file_size=media_size,
+        media_filename=media_filename,
         media_caption=media_caption,
         received_at=msg.date,
     )

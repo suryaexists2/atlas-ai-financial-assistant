@@ -30,6 +30,21 @@ class DocumentStatus(StrEnum):
     FAILED = "failed"
 
 
+class DocumentKind(StrEnum):
+    """Kind of a media/document payload detected before parsing."""
+
+    TEXT = "text"
+    MARKDOWN = "markdown"
+    CSV = "csv"
+    JSON = "json"
+    PDF = "pdf"
+    DOCX = "docx"
+    XLSX = "xlsx"
+    VOICE = "voice"
+    IMAGE = "image"
+    UNSUPPORTED = "unsupported"
+
+
 class MemoryStatus(StrEnum):
     ACTIVE = "active"
     SUPERSEDED = "superseded"

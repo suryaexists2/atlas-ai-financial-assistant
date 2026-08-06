@@ -51,6 +51,50 @@ def _build_worker(settings: Settings, session_factory, sender: TelegramSender) -
     )
 
 
+def _build_media_ingestor(settings: Settings, bot):
+    """Builds the media->text pipeline (download + parse + chunk). AI parsers
+    (voice STT, image vision) activate only when an OpenRouter key is present;
+    pure-file parsers (txt/csv/json/pdf/docx/xlsx/md) always work."""
+    from app.application.ingestion.pipeline import IngestionPipeline
+    from app.infrastructure.ingestion.downloader import TelegramFileFetcher
+    from app.infrastructure.ingestion.media_ai import OpenRouterMediaAI
+    from app.infrastructure.ingestion.parsers import build_default_registry
+    from app.interfaces.telegram.normalized import NormalizedMessage
+
+    stt = None
+    vision = None
+    if settings.openrouter_api_key:
+        media_ai = OpenRouterMediaAI(
+            settings.openrouter_api_key,
+            stt_model=settings.stt_model,
+            vision_model=settings.vision_model,
+            timeout_seconds=max(settings.stt_timeout_seconds, settings.vision_timeout_seconds),
+        )
+        stt = media_ai
+        vision = media_ai
+
+    registry = build_default_registry(stt=stt, vision=vision)
+    pipeline = IngestionPipeline(
+        registry=registry,
+        fetcher=TelegramFileFetcher(bot, max_bytes=settings.file_max_bytes),
+        stt=stt,
+        vision=vision,
+        max_bytes=settings.file_max_bytes,
+        max_chars=settings.ingestion_max_chars,
+        chunk_chars=settings.ingestion_chunk_chars,
+        excerpt_chars=settings.ingestion_excerpt_chars,
+    )
+
+    async def ingestor(message: NormalizedMessage):
+        return await pipeline.process(
+            file_id=message.media_file_id or "",
+            mime_type=message.media_mime_type,
+            filename=message.media_filename,
+        )
+
+    return ingestor
+
+
 def _build_agent_composer(settings: Settings) -> AgentComposer | None:
     """Builds the agent composer when an LLM key is configured; else None."""
     from app.application.agent.core import AgentCore
@@ -104,6 +148,7 @@ async def lifespan(app: FastAPI):
             composer,
             echo_mode=True,  # echo_mode means "reply at all"; composer decides how
             fallback_reply=settings.agent_fallback_reply,
+            media_ingestor=_build_media_ingestor(settings, bot),
         )
         worker = _build_worker(
             settings,

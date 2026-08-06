@@ -61,6 +61,23 @@ class SqlConversationRepository(ConversationRepository):
         await self.session.flush()
         return message
 
+    async def update_message(
+        self,
+        message_id: uuid.UUID,
+        *,
+        content: str | None = None,
+        media_meta: dict[str, Any] | None = None,
+    ) -> Message | None:
+        message = await self.session.get(Message, message_id)
+        if message is None:
+            return None
+        if content is not None:
+            message.content = content
+        if media_meta is not None:
+            message.media_meta = {**(message.media_meta or {}), **media_meta}
+        await self.session.flush()
+        return message
+
     async def list_messages(self, conversation_id: uuid.UUID, limit: int = 50) -> list[Message]:
         result = await self.session.execute(
             select(Message)
