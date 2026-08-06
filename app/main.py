@@ -113,3 +113,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     return app
+
+
+# Module-level instance for ASGI servers (uvicorn app.main:app).
+app = create_app()
