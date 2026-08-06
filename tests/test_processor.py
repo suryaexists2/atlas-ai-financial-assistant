@@ -111,7 +111,7 @@ async def test_echo_disabled_still_persists(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_composer_failure_does_not_break_ingestion(session_factory):
+async def test_composer_failure_still_enqueues_fallback(session_factory):
     async def broken_composer(ctx):
         raise RuntimeError("composer exploded")
 
@@ -125,3 +125,28 @@ async def test_composer_failure_does_not_break_ingestion(session_factory):
         user = await uow.users.get_by_telegram_id(777)
         convos = await uow.conversations.list_for_user(user.id)
         assert len(await uow.conversations.list_messages(convos[0].id)) == 1
+        result = await uow.session.execute(select(OutboundMessage))
+        outbound = result.scalars().all()
+        assert len(outbound) == 1
+        assert (
+            outbound[0].payload["text"]
+            == UpdateProcessor(session_factory, _compose)._fallback_reply
+        )
+
+
+@pytest.mark.asyncio
+async def test_composer_none_still_enqueues_fallback(session_factory):
+    async def silent_composer(ctx):
+        return None
+
+    processor = UpdateProcessor(session_factory, silent_composer, fallback_reply="custom fallback")
+    payload = tg_text_update(update_id=41, chat_id=777, message_id=61, text="quiet")
+
+    assert await processor.process_update(payload, source="webhook", correlation_id="c-8") is True
+
+    uow = UnitOfWork(session_factory)
+    async with uow:
+        result = await uow.session.execute(select(OutboundMessage))
+        outbound = result.scalars().all()
+        assert len(outbound) == 1
+        assert outbound[0].payload["text"] == "custom fallback"

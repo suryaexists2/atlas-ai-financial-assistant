@@ -49,8 +49,8 @@ class AgentCore:
         user_id: uuid.UUID,
         conversation_id: uuid.UUID,
         tool_context: ToolContext | None = None,
-    ) -> str | None:
-        """Runs a turn. Returns the reply text, or None when silent/no reply."""
+    ) -> str:
+        """Runs a turn and always returns a reply string (fallback on failure)."""
         messages = await build_messages(
             uow,
             user_id=user_id,
@@ -59,57 +59,64 @@ class AgentCore:
         )
         tool_ctx = tool_context or ToolContext(uow=uow, user_id=user_id)
 
-        for _ in range(self._max_tool_rounds + 1):
-            try:
-                response = await self._gateway.complete(
-                    messages,
-                    tools=self._tools.schemas(),
-                    max_tokens=self._max_tokens,
-                    temperature=self._temperature,
-                )
-            except LLMGatewayError as exc:
-                logger.warning("agent_gateway_error", error=str(exc))
-                return self._fallback_reply
+        try:
+            for _ in range(self._max_tool_rounds + 1):
+                try:
+                    response = await self._gateway.complete(
+                        messages,
+                        tools=self._tools.schemas(),
+                        max_tokens=self._max_tokens,
+                        temperature=self._temperature,
+                    )
+                except LLMGatewayError as exc:
+                    logger.warning("agent_gateway_error", error=str(exc))
+                    return self._fallback_reply
 
-            if not response.tool_calls:
-                text = (response.content or "").strip()
-                return text or None
+                if not response.tool_calls:
+                    text = (response.content or "").strip()
+                    if text:
+                        return text
+                    logger.warning("agent_empty_reply_falling_back")
+                    return self._fallback_reply
 
-            # Assistant message carrying the tool calls, then results.
-            assistant_msg: dict[str, Any] = {
-                "role": "assistant",
-                "content": response.content,
-                "tool_calls": [
-                    {
-                        "id": call.id,
-                        "type": "function",
-                        "function": {
-                            "name": call.name,
-                            "arguments": json.dumps(call.arguments),
-                        },
-                    }
-                    for call in response.tool_calls
-                ],
-            }
-            messages.append(assistant_msg)
+                # Assistant message carrying the tool calls, then results.
+                assistant_msg: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": response.content,
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": json.dumps(call.arguments),
+                            },
+                        }
+                        for call in response.tool_calls
+                    ],
+                }
+                messages.append(assistant_msg)
 
-            for call in response.tool_calls:
-                result = await self._tools.execute(tool_ctx, call.name, call.arguments)
-                logger.info(
-                    "agent_tool_executed",
-                    tool=call.name,
-                    result_preview=result[:200],
-                )
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "content": result,
-                    }
-                )
+                for call in response.tool_calls:
+                    result = await self._tools.execute(tool_ctx, call.name, call.arguments)
+                    logger.info(
+                        "agent_tool_executed",
+                        tool=call.name,
+                        result_preview=result[:200],
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": result,
+                        }
+                    )
+        except Exception:  # noqa: BLE001 - never leave the user without a reply
+            logger.exception("agent_turn_error_falling_back")
+            return self._fallback_reply
 
         logger.warning("agent_tool_rounds_exhausted", rounds=self._max_tool_rounds)
-        return None
+        return self._fallback_reply
 
 
 __all__ = ["AgentCore"]

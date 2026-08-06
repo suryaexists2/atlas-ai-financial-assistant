@@ -58,6 +58,11 @@ async def telegram_webhook(
             source="webhook",
         )
     )
-    await processor.process_update(payload, source="webhook", correlation_id=correlation_id)
+    await processor.process_update(
+        payload,
+        source="webhook",
+        correlation_id=correlation_id,
+        background_reply=True,
+    )
     logger.info("webhook_handled", update_id=payload.get("update_id"))
     return {"ok": True}

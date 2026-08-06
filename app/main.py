@@ -103,6 +103,7 @@ async def lifespan(app: FastAPI):
             app.state.session_factory,
             composer,
             echo_mode=True,  # echo_mode means "reply at all"; composer decides how
+            fallback_reply=settings.agent_fallback_reply,
         )
         worker = _build_worker(
             settings,

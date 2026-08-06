@@ -8,6 +8,7 @@ through the outbox. It never talks to the Telegram API directly.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -44,15 +45,27 @@ class UpdateProcessor:
         reply_composer: ReplyComposer,
         *,
         echo_mode: bool = True,
+        fallback_reply: str = "Sorry — I hit a temporary hiccup. Give me a moment and try again.",
     ) -> None:
         self._session_factory = session_factory
         self._reply_composer = reply_composer
         self._echo_mode = echo_mode
+        self._fallback_reply = fallback_reply
 
     async def process_update(
-        self, payload: dict[str, Any], *, source: str, correlation_id: str
+        self,
+        payload: dict[str, Any],
+        *,
+        source: str,
+        correlation_id: str,
+        background_reply: bool = False,
     ) -> bool:
-        """Handles one update. True when processed, False when skipped/duplicate."""
+        """Handles one update. True when processed, False when skipped/duplicate.
+
+        When `background_reply` is set, the reply is composed on a fresh session
+        in a background task so the webhook can ACK Telegram immediately instead
+        of blocking on the LLM turn.
+        """
         update = types.Update.model_validate(payload)
 
         if update.edited_message is not None or update.message is None:
@@ -87,10 +100,32 @@ class UpdateProcessor:
                 await conversation_service.get_or_create_active_conversation(uow, user_id)
             )
             await conversation_service.persist_incoming_message(uow, conversation_id, normalized)
+            await uow.commit()
 
-            # 4) Reply through the outbox (never direct to Telegram here).
-            await self._maybe_reply(uow, normalized, user_id, conversation_id)
+        # 4) Reply through the outbox (never direct to Telegram here).
+        if not self._echo_mode:
+            return True
+
+        if background_reply:
+            asyncio.create_task(
+                self._compose_and_enqueue(normalized, user_id, conversation_id),
+                name=f"reply:{correlation_id[:12]}",
+            )
+        else:
+            async with UnitOfWork(self._session_factory) as reply_uow:
+                await self._maybe_reply(reply_uow, normalized, user_id, conversation_id)
         return True
+
+    async def _compose_and_enqueue(
+        self,
+        message: NormalizedMessage,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+    ) -> None:
+        """Background reply path: compose on a fresh session, then persist only the
+        outbound message (the LLM turn can be slow and must not hold the webhook)."""
+        async with UnitOfWork(self._session_factory) as uow:
+            await self._maybe_reply(uow, message, user_id, conversation_id)
 
     async def _maybe_reply(
         self,
@@ -114,6 +149,7 @@ class UpdateProcessor:
         except Exception:  # noqa: BLE001 - never let composer failure break ingestion
             logger.exception("reply_composer_failed", update_id=message.update_id)
 
+        reply_text = reply_text or self._fallback_reply
         if reply_text:
             await uow.outbox.enqueue(
                 chat_id=message.chat_id,

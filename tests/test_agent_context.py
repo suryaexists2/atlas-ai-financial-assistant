@@ -81,6 +81,27 @@ async def test_context_skips_empty_and_tool_messages(uow, demo_user):
     assert contents.count("a real reply") == 1
 
 
+@pytest.mark.asyncio
+async def test_context_media_placeholder_for_voice(uow, demo_user):
+    user_id = demo_user["user_id"]
+    async with uow:
+        conversation = await uow.conversations.create(user_id)
+        await uow.conversations.add_message(
+            conversation.id,
+            role="user",
+            content=None,
+            content_type="voice",
+            media_meta={"file_id": "f1", "mime_type": "audio/ogg"},
+        )
+        await uow.commit()
+        conversation_id = conversation.id
+
+    async with uow:
+        messages = await build_messages(uow, user_id=user_id, conversation_id=conversation_id)
+    contents = [m["content"] for m in messages]
+    assert any("voice message" in c for c in contents), contents
+
+
 def test_system_prompt_is_stable():
     prompt = build_system_prompt()
     assert "Atlas" in prompt

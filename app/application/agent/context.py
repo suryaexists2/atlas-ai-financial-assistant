@@ -76,10 +76,28 @@ async def build_messages(
             continue
         content = message.content or ""
         if not content.strip():
+            if role == "user" and message.content_type is not None:
+                label = _media_label(message)
+                if label:
+                    messages.append({"role": "user", "content": label})
             continue
         messages.append({"role": role, "content": content})
 
     return messages
+
+
+def _media_label(message: Any) -> str | None:
+    """Placeholder text for a media message with no caption/transcript."""
+    from app.domain.enums import ContentType
+
+    kind = message.content_type
+    if kind == ContentType.VOICE:
+        return "[voice message — audio transcription not available yet]"
+    if kind == ContentType.IMAGE:
+        return "[image message — visual analysis not available yet]"
+    if kind == ContentType.DOCUMENT:
+        return "[document message]"
+    return None
 
 
 __all__ = ["SYSTEM_PROMPT", "build_system_prompt", "build_messages"]

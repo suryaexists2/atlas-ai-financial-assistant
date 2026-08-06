@@ -96,7 +96,7 @@ async def test_tool_call_then_final_answer(uow, session_factory, demo_user):
 
 
 @pytest.mark.asyncio
-async def test_max_tool_rounds_exhausted_returns_none(uow, demo_user):
+async def test_max_tool_rounds_exhausted_returns_fallback(uow, demo_user):
     async with uow:
         conversation = await uow.conversations.create(demo_user["user_id"])
         await uow.commit()
@@ -115,7 +115,7 @@ async def test_max_tool_rounds_exhausted_returns_none(uow, demo_user):
             ),
         ]
     )
-    agent = make_agent(gateway)  # max_tool_rounds=2 -> 3 gateway calls allowed
+    agent = make_agent(gateway, fallback_reply="Sorry, try again.")  # max_tool_rounds=2
     async with uow:
         reply = await agent.run(
             uow,
@@ -123,7 +123,40 @@ async def test_max_tool_rounds_exhausted_returns_none(uow, demo_user):
             conversation_id=conversation_id,
             tool_context=ToolContext(uow=uow, user_id=demo_user["user_id"]),
         )
-    assert reply is None
+    assert reply == "Sorry, try again."
+
+
+@pytest.mark.asyncio
+async def test_tool_exception_falls_back(uow, demo_user):
+    """A non-LLM error mid-turn must NOT leave the user silent."""
+    from app.application.agent.tools import Tool, ToolRegistry
+
+    async def _explode(ctx, args):
+        raise RuntimeError("provider exploded")
+
+    boom_tool = Tool(name="boom", description="explodes", parameters={}, handler=_explode)
+    registry = ToolRegistry([boom_tool])
+
+    async with uow:
+        conversation = await uow.conversations.create(demo_user["user_id"])
+        await uow.commit()
+        conversation_id = conversation.id
+
+    gateway = FakeGateway(
+        [
+            LLMResponse(content=None, tool_calls=[LLMToolCall(id="t", name="boom", arguments={})]),
+            LLMResponse(content="recovery text"),
+        ]
+    )
+    agent = AgentCore(gateway, registry, max_tool_rounds=2, fallback_reply="Sorry, try again.")
+    async with uow:
+        reply = await agent.run(
+            uow,
+            user_id=demo_user["user_id"],
+            conversation_id=conversation_id,
+            tool_context=ToolContext(uow=uow, user_id=demo_user["user_id"]),
+        )
+    assert reply == "Sorry, try again."
 
 
 @pytest.mark.asyncio
@@ -146,14 +179,14 @@ async def test_gateway_error_returns_fallback(uow, demo_user):
 
 
 @pytest.mark.asyncio
-async def test_empty_reply_returns_none(uow, demo_user):
+async def test_empty_reply_returns_fallback(uow, demo_user):
     async with uow:
         conversation = await uow.conversations.create(demo_user["user_id"])
         await uow.commit()
         conversation_id = conversation.id
 
     gateway = FakeGateway([LLMResponse(content="   ")])
-    agent = make_agent(gateway)
+    agent = make_agent(gateway, fallback_reply="Sorry, try again.")
     async with uow:
         reply = await agent.run(
             uow,
@@ -161,7 +194,7 @@ async def test_empty_reply_returns_none(uow, demo_user):
             conversation_id=conversation_id,
             tool_context=ToolContext(uow=uow, user_id=demo_user["user_id"]),
         )
-    assert reply is None
+    assert reply == "Sorry, try again."
 
 
 @pytest.mark.asyncio
