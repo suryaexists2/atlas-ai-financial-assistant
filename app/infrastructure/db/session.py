@@ -23,6 +23,12 @@ def build_engine(settings: Settings) -> AsyncEngine:
     if settings.database_url.startswith("sqlite"):
         kwargs["connect_args"] = {"check_same_thread": False}
     else:
+        kwargs["connect_args"] = {
+            # Supabase uses pgbouncer in transaction mode, which does not
+            # support asyncpg's prepared statement cache. Disabling it keeps
+            # pooled transactions from throwing DuplicatePreparedStatementError.
+            "statement_cache_size": 0
+        }
         kwargs.update(
             pool_size=settings.db_pool_size,
             max_overflow=settings.db_max_overflow,
