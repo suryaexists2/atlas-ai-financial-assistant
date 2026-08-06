@@ -27,6 +27,7 @@ class ToolContext:
     user_id: uuid.UUID
     finnhub: FinnhubClient | None = None
     sec: SecEdgarClient | None = None
+    google_sheets: Any = None
 
     @property
     def watchlist(self) -> WatchlistRepository:
@@ -55,6 +56,10 @@ class ToolContext:
     @property
     def user(self):
         return self.uow.users
+
+    @property
+    def integrations(self):
+        return self.uow.integrations
 
 
 ToolHandler = Callable[[ToolContext, dict[str, Any]], Awaitable[str]]
@@ -386,6 +391,71 @@ async def _get_document_contents(ctx: ToolContext, args: dict[str, Any]) -> str:
     )
 
 
+async def _link_google_sheet(ctx: ToolContext, args: dict[str, Any]) -> str:
+    from app.domain.enums import IntegrationProvider
+
+    url = str(args.get("url") or "").strip()
+    if not url:
+        return json.dumps({"error": "a Google Sheets URL is required"})
+    link = await ctx.integrations.upsert(
+        ctx.user_id,
+        provider=IntegrationProvider.SHEETS,
+        access_token=url,
+        scopes=["read"],
+    )
+    await ctx.uow.commit()
+    return json.dumps(
+        {"message": "Google Sheet linked; you can query it now", "sheet_id": str(link.id)}
+    )
+
+
+async def _unlink_google_sheet(ctx: ToolContext, args: dict[str, Any]) -> str:
+    from app.domain.enums import IntegrationProvider
+
+    link = await ctx.integrations.get_by_provider(ctx.user_id, IntegrationProvider.SHEETS)
+    if link is None:
+        return json.dumps({"error": "no linked Google Sheet"})
+    await ctx.integrations.delete(link)
+    await ctx.uow.commit()
+    return json.dumps({"message": "Google Sheet unlinked"})
+
+
+async def _read_google_sheet(ctx: ToolContext, args: dict[str, Any]) -> str:
+    from app.domain.enums import IntegrationProvider
+    from app.infrastructure.providers.google_sheets import sheet_id_from_url
+
+    url = str(args.get("url") or "").strip()
+    if not url:
+        link = await ctx.integrations.get_by_provider(
+            ctx.user_id, IntegrationProvider.SHEETS
+        )
+        if link is not None:
+            url = link.access_token
+    if not url:
+        return json.dumps(
+            {
+                "error": (
+                    "no Google Sheet URL given and none linked. Send a sheet "
+                    "URL or link one with link_google_sheet."
+                )
+            }
+        )
+    if ctx.google_sheets is None:
+        return json.dumps({"error": "Google Sheets is not configured"})
+    sheet_id = sheet_id_from_url(url)
+    if sheet_id is None:
+        return json.dumps({"error": "could not find a Google Sheet id in that URL"})
+    try:
+        rows = await ctx.google_sheets.fetch_rows(url, max_rows=200)
+    except Exception as exc:  # noqa: BLE001 - surface provider errors to the model
+        return json.dumps({"error": str(exc)})
+    if not rows:
+        return json.dumps({"error": "that sheet returned no rows", "sheet_id": sheet_id})
+    return json.dumps(
+        {"sheet_id": sheet_id, "row_count": len(rows), "rows": rows[:20]}
+    )
+
+
 DEFAULT_TOOLS: list[Tool] = [
     Tool(
         name="get_market_quote",
@@ -578,6 +648,32 @@ DEFAULT_TOOLS: list[Tool] = [
         ),
         parameters={"index": {"type": "integer", "description": "0 = most recent document"}},
         handler=_get_document_contents,
+    ),
+    Tool(
+        name="link_google_sheet",
+        description=(
+            "Remember a Google Sheets URL for the user so they can be queried later "
+            "without resending the link."
+        ),
+        parameters={"url": {"type": "string", "description": "Google Sheets share URL"}},
+        required=["url"],
+        handler=_link_google_sheet,
+    ),
+    Tool(
+        name="unlink_google_sheet",
+        description="Forget the user's linked Google Sheet.",
+        parameters={},
+        handler=_unlink_google_sheet,
+    ),
+    Tool(
+        name="read_google_sheet",
+        description=(
+            "Read rows from a Google Sheet. Uses the linked sheet if no URL is given. "
+            "Useful to pull a model portfolio, pipeline resigning data, or spreadsheets "
+            "the user keeps in Drive."
+        ),
+        parameters={"url": {"type": "string", "description": "Optional Google Sheets URL"}},
+        handler=_read_google_sheet,
     ),
 ]
 

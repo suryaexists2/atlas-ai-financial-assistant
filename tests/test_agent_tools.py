@@ -274,3 +274,39 @@ async def test_get_document_contents_returns_extracted_text(uow, demo_user):
         contents = json.loads(await registry.execute(ctx, "get_document_contents", {"index": 0}))
         assert contents["filename"] == "report.pdf"
         assert "Revenue grew 20%" in contents["text"]
+
+
+@pytest.mark.asyncio
+async def test_link_and_read_google_sheet(uow, demo_user):
+    import httpx
+
+    from app.infrastructure.providers.google_sheets import GoogleSheetsClient
+
+    SHEET_URL = "https://docs.google.com/spreadsheets/d/abc123XYZuvw45/edit"
+    CSV = 'ticker,qty\nAAPL,100\nTSLA,50\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "/abc123XYZuvw45/gviz/tq" in str(request.url)
+        return httpx.Response(200, text=CSV)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    sheets = GoogleSheetsClient(http=http)
+    registry = default_registry()
+
+    async with uow:
+        ctx = ToolContext(uow=uow, user_id=demo_user["user_id"], google_sheets=sheets)
+        linked = json.loads(
+            await registry.execute(ctx, "link_google_sheet", {"url": SHEET_URL})
+        )
+        assert "linked" in linked["message"]
+
+    async with uow:
+        ctx = ToolContext(uow=uow, user_id=demo_user["user_id"], google_sheets=sheets)
+        read = json.loads(await registry.execute(ctx, "read_google_sheet", {}))
+        assert read["row_count"] == 2
+        assert read["rows"][0]["ticker"] == "AAPL"
+
+    async with uow:
+        ctx = ToolContext(uow=uow, user_id=demo_user["user_id"], google_sheets=sheets)
+        unlinked = json.loads(await registry.execute(ctx, "unlink_google_sheet", {}))
+        assert "unlinked" in unlinked["message"]
