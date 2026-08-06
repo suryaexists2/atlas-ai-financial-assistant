@@ -96,9 +96,7 @@ async def main() -> int:
     if manual_db:
         import asyncpg
 
-        conn = await asyncpg.connect(
-            database_url.replace("+asyncpg", ""), timeout=10
-        )
+        conn = await asyncpg.connect(database_url.replace("+asyncpg", ""), timeout=10)
         try:
             recent = await conn.fetch(
                 "SELECT content, content_type, correlation_id "

@@ -17,7 +17,7 @@ from app.infrastructure.telegram.outbox_worker import OutboxWorker
 from app.infrastructure.telegram.rate_limit import RateLimiter
 from app.infrastructure.telegram.sender import TelegramSender
 from app.interfaces.telegram.processor import UpdateProcessor
-from app.interfaces.telegram.responder import dev_echo_reply
+from app.interfaces.telegram.responder import EchoComposer
 
 logger = get_logger("run_polling")
 
@@ -59,7 +59,7 @@ async def main() -> None:
 
     processor = UpdateProcessor(
         session_factory,
-        dev_echo_reply,
+        EchoComposer(),
         echo_mode=settings.echo_mode,
     )
 

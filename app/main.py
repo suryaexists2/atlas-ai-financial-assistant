@@ -9,6 +9,9 @@ from app.core.config import Settings, get_settings
 from app.core.exceptions import AppError
 from app.core.logging import configure_logging, get_logger
 from app.infrastructure.db.session import build_engine, build_session_factory, dispose_engine
+from app.infrastructure.llm.gateway import OpenRouterGateway
+from app.infrastructure.providers.finnhub import FinnhubClient
+from app.infrastructure.providers.sec import SecEdgarClient
 from app.infrastructure.telegram.api import AiogramTelegramApi
 from app.infrastructure.telegram.outbox_worker import OutboxWorker
 from app.infrastructure.telegram.rate_limit import RateLimiter
@@ -17,7 +20,7 @@ from app.interfaces.api.middleware import CorrelationMiddleware
 from app.interfaces.api.routes import health
 from app.interfaces.api.routes.webhook import router as webhook_router
 from app.interfaces.telegram.processor import UpdateProcessor
-from app.interfaces.telegram.responder import dev_echo_reply
+from app.interfaces.telegram.responder import AgentComposer, EchoComposer
 
 logger = get_logger(__name__)
 
@@ -48,6 +51,35 @@ def _build_worker(settings: Settings, session_factory, sender: TelegramSender) -
     )
 
 
+def _build_agent_composer(settings: Settings) -> AgentComposer | None:
+    """Builds the agent composer when an LLM key is configured; else None."""
+    from app.application.agent.core import AgentCore
+    from app.application.agent.tools import default_registry
+
+    if not settings.openrouter_api_key:
+        logger.warning("agent_disabled_no_llm_key")
+        return None
+
+    gateway = OpenRouterGateway(
+        settings.openrouter_api_key,
+        settings.llm_model,
+        timeout_seconds=settings.llm_timeout_seconds,
+        max_retries=settings.llm_max_retries,
+    )
+    finnhub = FinnhubClient(settings.finnhub_api_key) if settings.finnhub_api_key else None
+    sec = SecEdgarClient(settings.sec_user_agent)
+    agent = AgentCore(
+        gateway,
+        default_registry(),
+        max_tool_rounds=settings.agent_max_tool_rounds,
+        max_tokens=settings.llm_max_tokens,
+        temperature=settings.llm_temperature,
+        fallback_reply=settings.agent_fallback_reply,
+        max_context_messages=settings.agent_context_max_messages,
+    )
+    return AgentComposer(agent, finnhub=finnhub, sec=sec)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings: Settings = app.state.settings
@@ -62,10 +94,15 @@ async def lifespan(app: FastAPI):
 
         bot = Bot(token=settings.telegram_bot_token)
         app.state.telegram_bot = bot
+        composer = (
+            EchoComposer()
+            if settings.echo_mode
+            else (_build_agent_composer(settings) or EchoComposer())
+        )
         app.state.telegram_processor = UpdateProcessor(
             app.state.session_factory,
-            dev_echo_reply,
-            echo_mode=settings.echo_mode,
+            composer,
+            echo_mode=True,  # echo_mode means "reply at all"; composer decides how
         )
         worker = _build_worker(
             settings,

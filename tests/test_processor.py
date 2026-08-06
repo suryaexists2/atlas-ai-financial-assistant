@@ -9,7 +9,8 @@ from app.interfaces.telegram.processor import UpdateProcessor
 from tests.conftest import tg_text_update, tg_voice_update
 
 
-async def _compose(message) -> str:
+async def _compose(ctx) -> str:
+    message = ctx.message
     return f"echo:{message.combined_text or message.media_type}"
 
 
@@ -111,7 +112,7 @@ async def test_echo_disabled_still_persists(session_factory):
 
 @pytest.mark.asyncio
 async def test_composer_failure_does_not_break_ingestion(session_factory):
-    async def broken_composer(message):
+    async def broken_composer(ctx):
         raise RuntimeError("composer exploded")
 
     processor = make_processor(session_factory, composer=broken_composer)

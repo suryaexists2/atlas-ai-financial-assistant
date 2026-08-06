@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     public_base_url: str | None = None
 
     llm_provider: Literal["openrouter", "openai", "anthropic"] = "openrouter"
+    llm_model: str = "openrouter/meta-llama/llama-3.3-70b-instruct"
+    llm_max_tokens: int = 600
+    llm_temperature: float = 0.3
+    llm_timeout_seconds: float = 60.0
+    llm_max_retries: int = 2
     openrouter_api_key: str | None = Field(default=None, repr=False)
     openai_api_key: str | None = Field(default=None, repr=False)
     anthropic_api_key: str | None = Field(default=None, repr=False)
@@ -45,6 +50,11 @@ class Settings(BaseSettings):
 
     sec_user_agent: str = "AtlasHackathon contact@example.com"
     finnhub_api_key: str | None = Field(default=None, repr=False)
+
+    # --- Agent Core ---
+    agent_max_tool_rounds: int = 5
+    agent_context_max_messages: int = 24
+    agent_fallback_reply: str = "Sorry — I hit a temporary hiccup. Give me a moment and try again."
 
     # Scheduler: how long after a scheduled fire time a job may still run.
     scheduler_misfire_grace_seconds: int = 60

@@ -9,6 +9,7 @@ through the outbox. It never talks to the Telegram API directly.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from aiogram import types
@@ -22,7 +23,18 @@ from app.interfaces.telegram.normalizer import normalize_update
 
 logger = get_logger(__name__)
 
-ReplyComposer = Callable[[NormalizedMessage], Awaitable[str | None]]
+
+@dataclass
+class ReplyContext:
+    """Everything a reply composer needs for one turn."""
+
+    message: NormalizedMessage
+    uow: UnitOfWork
+    user_id: uuid.UUID
+    conversation_id: uuid.UUID
+
+
+ReplyComposer = Callable[[ReplyContext], Awaitable[str | None]]
 
 
 class UpdateProcessor:
@@ -77,15 +89,28 @@ class UpdateProcessor:
             await conversation_service.persist_incoming_message(uow, conversation_id, normalized)
 
             # 4) Reply through the outbox (never direct to Telegram here).
-            await self._maybe_reply(uow, normalized)
+            await self._maybe_reply(uow, normalized, user_id, conversation_id)
         return True
 
-    async def _maybe_reply(self, uow: UnitOfWork, message: NormalizedMessage) -> None:
+    async def _maybe_reply(
+        self,
+        uow: UnitOfWork,
+        message: NormalizedMessage,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+    ) -> None:
         if not self._echo_mode:
             return
         reply_text: str | None = None
         try:
-            reply_text = await self._reply_composer(message)
+            reply_text = await self._reply_composer(
+                ReplyContext(
+                    message=message,
+                    uow=uow,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                )
+            )
         except Exception:  # noqa: BLE001 - never let composer failure break ingestion
             logger.exception("reply_composer_failed", update_id=message.update_id)
 
