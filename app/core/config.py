@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     public_base_url: str | None = None
 
     llm_provider: Literal["openrouter", "openai", "anthropic"] = "openrouter"
-    llm_model: str = "openrouter/meta-llama/llama-3.3-70b-instruct"
+    llm_model: str = "meta-llama/llama-3.3-70b-instruct"
     llm_max_tokens: int = 600
     llm_temperature: float = 0.3
     llm_timeout_seconds: float = 60.0
