@@ -1,0 +1,34 @@
+# Render Blueprint for Atlas (free tier).
+#
+# Deploy: push this repo to GitHub, then in render.com import "render.yaml"
+# (Blueprint) connected to that repo. Fill the `sync: false` env vars in the
+# Render dashboard after the service is created (they render as blanks here).
+services:
+  - type: web
+    name: atlas-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: >-
+      alembic upgrade head &&
+      uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: prod
+      - key: APP_NAME
+        value: Atlas
+      - key: SEC_USER_AGENT
+        value: AtlasHackathon contact@example.com
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: FINNHUB_API_KEY
+        sync: false
