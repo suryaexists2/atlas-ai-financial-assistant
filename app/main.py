@@ -124,6 +124,63 @@ def _build_agent_composer(settings: Settings) -> AgentComposer | None:
     return AgentComposer(agent, finnhub=finnhub, sec=sec)
 
 
+def _build_scheduler(settings: Settings, session_factory):
+    """Builds the proactive-intelligence scheduler worker, or None when the
+    background feature set is unavailable. The scheduler only ever delivers via
+    the durable Telegram outbox; it never talks to Telegram directly."""
+    from app.application.intelligence import IntelligenceContext
+    from app.application.intelligence.alerts import (
+        run_filing_alerts,
+        run_news_alerts,
+        run_price_alerts,
+    )
+    from app.application.intelligence.briefing import daily_brief
+    from app.application.intelligence.jobs import ensure_cycle_jobs
+    from app.application.intelligence.reminders import fire_reminder
+    from app.application.scheduling.worker import JobRunner, SchedulerWorker
+
+    if not settings.database_url:
+        return None
+
+    finnhub = FinnhubClient(settings.finnhub_api_key) if settings.finnhub_api_key else None
+    sec = SecEdgarClient(settings.sec_user_agent) if settings.sec_user_agent else None
+    gateway = (
+        OpenRouterGateway(
+            settings.openrouter_api_key,
+            settings.llm_model,
+            timeout_seconds=settings.llm_timeout_seconds,
+            max_retries=settings.llm_max_retries,
+        )
+        if settings.openrouter_api_key
+        else None
+    )
+    ctx = IntelligenceContext(finnhub=finnhub, sec=sec, gateway=gateway)
+    runner = JobRunner(
+        {
+            "daily_brief": daily_brief,
+            "reminder": fire_reminder,
+            "price_alerts": run_price_alerts,
+            "news_alerts": run_news_alerts,
+            "filing_alerts": run_filing_alerts,
+        }
+    )
+    scheduler = SchedulerWorker(
+        session_factory,
+        runner,
+        context=ctx,
+        poll_interval_seconds=settings.scheduler_poll_interval_seconds,
+        misfire_grace_seconds=settings.scheduler_misfire_grace_seconds,
+    )
+
+    async def seed():
+        from app.infrastructure.db.uow import UnitOfWork
+
+        async with UnitOfWork(session_factory) as uow:
+            await ensure_cycle_jobs(uow)
+
+    return scheduler, seed
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings: Settings = app.state.settings
@@ -132,6 +189,7 @@ async def lifespan(app: FastAPI):
     app.state.session_factory = build_session_factory(engine)
     app.state.telegram_processor = None
     app.state.outbox_worker = None
+    app.state.scheduler_worker = None
 
     if settings.telegram_bot_token:
         from aiogram import Bot
@@ -161,6 +219,17 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("telegram_not_configured_no_token")
 
+    built = _build_scheduler(settings, app.state.session_factory)
+    if built is not None:
+        scheduler, seed = built
+        try:
+            await seed()
+        except Exception:  # noqa: BLE001 - never block startup on job seeding
+            logger.exception("scheduler_seed_failed")
+        scheduler.start()
+        app.state.scheduler_worker = scheduler
+        logger.info("scheduler_runtime_ready")
+
     logger.info(
         "atlas_started",
         env=settings.app_env,
@@ -173,6 +242,9 @@ async def lifespan(app: FastAPI):
         worker = getattr(app.state, "outbox_worker", None)
         if worker is not None:
             await worker.stop()
+        scheduler = getattr(app.state, "scheduler_worker", None)
+        if scheduler is not None:
+            await scheduler.stop()
         await dispose_engine(engine)
         logger.info("atlas_stopped")
 

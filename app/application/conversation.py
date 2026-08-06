@@ -22,6 +22,8 @@ async def ensure_user(uow: UnitOfWork, message: NormalizedMessage) -> uuid.UUID:
             first_name=message.telegram_first_name,
             last_name=message.telegram_last_name,
         )
+        # Every user gets a profile row so onboarding has somewhere to live.
+        await uow.profiles.upsert(user.id)
     else:
         changed: dict = {}
         if message.telegram_username is not None and user.username != message.telegram_username:

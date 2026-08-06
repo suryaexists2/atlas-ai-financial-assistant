@@ -13,6 +13,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from app.application.scheduling.cron import cron_from_local_time, extract_clock_time
+from app.domain.enums import AlertKind
 from app.domain.repositories import MemoryRepository, WatchlistRepository
 from app.infrastructure.db.uow import UnitOfWork
 from app.infrastructure.providers.finnhub import FinnhubClient, FinnhubError
@@ -33,6 +35,26 @@ class ToolContext:
     @property
     def memories(self) -> MemoryRepository:
         return self.uow.memories
+
+    @property
+    def alerts(self):
+        return self.uow.alerts
+
+    @property
+    def documents(self):
+        return self.uow.documents
+
+    @property
+    def jobs(self):
+        return self.uow.jobs
+
+    @property
+    def profiles(self):
+        return self.uow.profiles
+
+    @property
+    def user(self):
+        return self.uow.users
 
 
 ToolHandler = Callable[[ToolContext, dict[str, Any]], Awaitable[str]]
@@ -200,6 +222,170 @@ async def _list_memories(ctx: ToolContext, args: dict[str, Any]) -> str:
     )
 
 
+async def _get_market_news(ctx: ToolContext, args: dict[str, Any]) -> str:
+    if ctx.finnhub is None:
+        return json.dumps({"error": "market data is not configured"})
+    limit = int(args.get("limit", 8))
+    items = await ctx.finnhub.general_news(limit=limit)
+    if not items:
+        return json.dumps({"error": "no news available right now"})
+    return json.dumps(items)
+
+
+async def _get_company_news(ctx: ToolContext, args: dict[str, Any]) -> str:
+    if ctx.finnhub is None:
+        return json.dumps({"error": "market data is not configured"})
+    symbol = str(args.get("symbol", "")).upper()
+    if not symbol:
+        return json.dumps({"error": "symbol is required"})
+    limit = int(args.get("limit", 8))
+    items = await ctx.finnhub.company_news(symbol, limit=limit)
+    if not items:
+        return json.dumps({"error": f"no recent news for {symbol}", "symbol": symbol})
+    return json.dumps({"symbol": symbol, "news": items})
+
+
+async def _get_company_earnings(ctx: ToolContext, args: dict[str, Any]) -> str:
+    if ctx.finnhub is None:
+        return json.dumps({"error": "market data is not configured"})
+    symbol = str(args.get("symbol", "")).upper()
+    if not symbol:
+        return json.dumps({"error": "symbol is required"})
+    item = await ctx.finnhub.earnings(symbol)
+    if not item:
+        return json.dumps({"error": f"no earnings data for {symbol}", "symbol": symbol})
+    return json.dumps({"symbol": symbol, "earnings": item})
+
+
+async def _create_price_alert(ctx: ToolContext, args: dict[str, Any]) -> str:
+    symbol = str(args.get("symbol", "")).upper()
+    if not symbol:
+        return json.dumps({"error": "symbol is required"})
+    percent = float(args.get("percent", 5))
+    condition = {
+        "operator": str(args.get("operator", "abs")),
+        "percent": percent,
+    }
+    if args.get("direction"):
+        condition["direction"] = str(args.get("direction"))
+    await ctx.alerts.create(
+        ctx.user_id, kind=AlertKind.PRICE, symbol=symbol, condition=condition
+    )
+    await ctx.uow.commit()
+    return json.dumps(
+        {"message": f"created a {percent:g}% price alert for {symbol}"}
+    )
+
+
+async def _create_news_alert(ctx: ToolContext, args: dict[str, Any]) -> str:
+    symbol = str(args.get("symbol", "")).upper()
+    if not symbol:
+        return json.dumps({"error": "symbol is required"})
+    condition = {}
+    if args.get("keyword"):
+        condition["keyword"] = str(args.get("keyword"))
+    await ctx.alerts.create(ctx.user_id, kind=AlertKind.NEWS, symbol=symbol, condition=condition)
+    await ctx.uow.commit()
+    return json.dumps({"message": f"created a news alert for {symbol}"})
+
+
+async def _create_filing_alert(ctx: ToolContext, args: dict[str, Any]) -> str:
+    symbol = str(args.get("symbol", "")).upper()
+    if not symbol:
+        return json.dumps({"error": "symbol is required"})
+    await ctx.alerts.create(
+        ctx.user_id,
+        kind=AlertKind.FILING,
+        symbol=symbol,
+        condition={"forms": ["8-K", "10-K", "10-Q"]},
+    )
+    await ctx.uow.commit()
+    return json.dumps({"message": f"created an SEC filing alert for {symbol}"})
+
+
+async def _list_alerts(ctx: ToolContext, args: dict[str, Any]) -> str:
+    alerts = await ctx.alerts.list_enabled(ctx.user_id)
+    return json.dumps(
+        [
+            {
+                "id": str(a.id),
+                "kind": a.kind.value,
+                "symbol": a.symbol,
+                "condition": a.condition,
+            }
+            for a in alerts
+        ]
+    )
+
+
+async def _delete_alert(ctx: ToolContext, args: dict[str, Any]) -> str:
+    alert_id = str(args.get("alert_id", ""))
+    alerts = await ctx.alerts.list_enabled(ctx.user_id)
+    target = next((a for a in alerts if str(a.id) == alert_id), None)
+    if target is None:
+        return json.dumps({"error": "alert not found"})
+    await ctx.alerts.update(target, enabled=False)
+    await ctx.uow.commit()
+    return json.dumps({"message": f"alert {alert_id} removed"})
+
+
+async def _create_daily_briefing(ctx: ToolContext, args: dict[str, Any]) -> str:
+    time = str(args.get("time") or "08:00")
+    jobs = await ctx.jobs.list_enabled()
+    if any(j.user_id == ctx.user_id and j.job_type == "daily_brief" for j in jobs):
+        return json.dumps({"message": "a daily briefing is already scheduled"})
+    user = await ctx.user.get_by_id(ctx.user_id)
+    tz = user.timezone if user is not None else None
+    await ctx.jobs.create(
+        job_type="daily_brief",
+        cron_expr=cron_from_local_time(time, tz),
+        user_id=ctx.user_id,
+        params={"scope": "watchlist"},
+        timezone=(tz or "UTC"),
+    )
+    await ctx.profiles.upsert(ctx.user_id, briefing_time=extract_clock_time(time))
+    await ctx.uow.commit()
+    return json.dumps({"message": f"daily briefing scheduled at {time}"})
+
+
+async def _create_reminder(ctx: ToolContext, args: dict[str, Any]) -> str:
+    text = str(args.get("text") or "").strip()
+    if not text:
+        return json.dumps({"error": "reminder text is required"})
+    time = extract_clock_time(str(args.get("time") or args.get("when") or ""))
+    time = time or "09:00"
+    user = await ctx.user.get_by_id(ctx.user_id)
+    tz = user.timezone if user is not None else None
+    await ctx.jobs.create(
+        job_type="reminder",
+        cron_expr=cron_from_local_time(time, tz),
+        user_id=ctx.user_id,
+        params={"text": text, "once": bool(args.get("once", False))},
+        timezone=(tz or "UTC"),
+    )
+    await ctx.uow.commit()
+    return json.dumps({"message": f"reminder set for {time}: {text}"})
+
+
+async def _get_document_contents(ctx: ToolContext, args: dict[str, Any]) -> str:
+    docs = await ctx.documents.list_for_user(ctx.user_id, limit=3)
+    if not docs:
+        return json.dumps({"error": "no uploaded documents found"})
+    index = int(args.get("index", 0))
+    doc = docs[index] if 0 <= index < len(docs) else None
+    if doc is None:
+        return json.dumps({"error": "document index out of range"})
+    text = (doc.doc_meta or {}).get("extracted_text") or ""
+    return json.dumps(
+        {
+            "filename": doc.filename,
+            "kind": (doc.doc_meta or {}).get("kind"),
+            "status": doc.status.value,
+            "text": text[:12_000],
+        }
+    )
+
+
 DEFAULT_TOOLS: list[Tool] = [
     Tool(
         name="get_market_quote",
@@ -282,6 +468,116 @@ DEFAULT_TOOLS: list[Tool] = [
         description="List memories stored about the user (preferences, interests, goals).",
         parameters={"limit": {"type": "integer", "description": "Max memories (default 20)"}},
         handler=_list_memories,
+    ),
+    Tool(
+        name="get_market_news",
+        description="Get the latest general market news headlines with sources.",
+        parameters={"limit": {"type": "integer", "description": "Max headlines (default 8)"}},
+        handler=_get_market_news,
+    ),
+    Tool(
+        name="get_company_news",
+        description="Get recent news headlines for a company symbol (e.g. AAPL).",
+        parameters={
+            "symbol": {"type": "string", "description": "US stock ticker symbol"},
+            "limit": {"type": "integer", "description": "Max headlines (default 8)"},
+        },
+        required=["symbol"],
+        handler=_get_company_news,
+    ),
+    Tool(
+        name="get_company_earnings",
+        description=(
+            "Get the latest earnings event (date, estimates, actuals) for a company symbol."
+        ),
+        parameters={"symbol": {"type": "string", "description": "US stock ticker symbol"}},
+        required=["symbol"],
+        handler=_get_company_earnings,
+    ),
+    Tool(
+        name="create_price_alert",
+        description=(
+            "Create an alert that notifies the user when a stock moves more than a "
+            "percent in a day. operator: abs (any direction), gte, lte."
+        ),
+        parameters={
+            "symbol": {"type": "string", "description": "US stock ticker symbol"},
+            "percent": {"type": "number", "description": "Percent threshold, default 5"},
+            "operator": {
+                "type": "string",
+                "description": "abs|gte|lte, default abs",
+            },
+            "direction": {
+                "type": "string",
+                "description": "Optional: up|down for directional triggers",
+            },
+        },
+        required=["symbol"],
+        handler=_create_price_alert,
+    ),
+    Tool(
+        name="create_news_alert",
+        description="Create an alert that notifies on Reuters-hit news for a company symbol.",
+        parameters={
+            "symbol": {"type": "string", "description": "US stock ticker symbol"},
+            "keyword": {"type": "string", "description": "Optional keyword to match"},
+        },
+        required=["symbol"],
+        handler=_create_news_alert,
+    ),
+    Tool(
+        name="create_filing_alert",
+        description=(
+            "Create an alert that notifies when a company files an SEC form (8-K, 10-K, 10-Q)."
+        ),
+        parameters={"symbol": {"type": "string", "description": "US stock ticker symbol"}},
+        required=["symbol"],
+        handler=_create_filing_alert,
+    ),
+    Tool(
+        name="list_alerts",
+        description="List the user's active alerts.",
+        parameters={},
+        handler=_list_alerts,
+    ),
+    Tool(
+        name="delete_alert",
+        description="Delete/disable an alert by its alert_id (see list_alerts).",
+        parameters={"alert_id": {"type": "string", "description": "Alert id to remove"}},
+        required=["alert_id"],
+        handler=_delete_alert,
+    ),
+    Tool(
+        name="create_daily_briefing",
+        description=(
+            "Schedule (or reschedule) the user's daily morning briefing. "
+            "Pass a 24h local time like '08:00'."
+        ),
+        parameters={"time": {"type": "string", "description": "HH:MM local time, default 08:00"}},
+        handler=_create_daily_briefing,
+    ),
+    Tool(
+        name="create_reminder",
+        description=(
+            "Schedule a reminder. Use when the user says 'remind me'. "
+            "Pass 'time' like '09:00' or 'when', the text, and once=true for a single reminder."
+        ),
+        parameters={
+            "text": {"type": "string", "description": "Reminder text"},
+            "time": {"type": "string", "description": "HH:MM local time to remind"},
+            "once": {"type": "boolean", "description": "True if this should fire only once"},
+        },
+        required=["text"],
+        handler=_create_reminder,
+    ),
+    Tool(
+        name="get_document_contents",
+        description=(
+            "Re-read the text of a previously uploaded document for follow-up questions "
+            "(index 0 = most recent)."
+        ),
+        parameters={"index": {"type": "integer", "description": "0 = most recent document"}},
+        handler=_get_document_contents,
     ),
 ]
 

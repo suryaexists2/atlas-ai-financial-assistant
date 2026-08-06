@@ -1,0 +1,88 @@
+"""Scheduler worker + cron helper tests."""
+
+import datetime as dt
+
+from app.application.scheduling.cron import (
+    compute_next_run,
+    cron_from_local_time,
+    extract_clock_time,
+    is_valid_cron,
+)
+from app.application.scheduling.worker import JobRunner, SchedulerWorker
+
+
+def test_is_valid_cron():
+    assert is_valid_cron("0 8 * * *")
+    assert is_valid_cron("*/15 * * * *")
+    assert not is_valid_cron("")
+    assert not is_valid_cron("nope")
+    assert not is_valid_cron("60 0 * * *")
+
+
+def test_compute_next_run_chronological():
+    base = dt.datetime(2026, 8, 7, 7, 0, tzinfo=dt.UTC)
+    nxt = compute_next_run("30 8 * * *", after=base)
+    assert nxt is not None
+    assert nxt.hour == 8 and nxt.minute == 30
+    later = compute_next_run("30 8 * * *", after=nxt)
+    assert later is not None
+    assert later > nxt
+
+
+def test_compute_next_run_none_for_bad_expr():
+    assert compute_next_run("oops") is None
+
+
+def test_cron_from_local_time_utc_identity():
+    assert cron_from_local_time("08:30", None) == "30 8 * * *"
+
+
+def test_cron_from_local_time_offset():
+    # 08:30 in Asia/Kolkata = 03:00 UTC that day
+    assert cron_from_local_time("08:30", "Asia/Kolkata") == "0 3 * * *"
+
+
+def test_extract_clock_time():
+    assert extract_clock_time("remind me at 9:15am to review") == "09:15"
+    assert extract_clock_time("18:30") == "18:30"
+    assert extract_clock_time("no time here") is None
+
+
+async def test_scheduler_sweeps_due_jobs_once(session_factory, db_engine):
+    from app.domain.entities import ScheduledJob
+    from app.infrastructure.db.session import async_sessionmaker
+
+    def fake_now():
+        return dt.datetime(2026, 8, 7, 12, 1, 0, tzinfo=dt.UTC)
+
+    maker = async_sessionmaker(bind=db_engine)
+    async with maker() as session:
+        session.add(
+            ScheduledJob(
+                job_type="reminder",
+                cron_expr="* * * * *",
+                params={"text": "hi"},
+                next_run_at=fake_now() - dt.timedelta(minutes=1),
+            )
+        )
+        await session.commit()
+
+    called: list[str] = []
+
+    async def handler(inner_uow, job, context):
+        called.append(job.job_type)
+
+    runner = JobRunner({"reminder": handler})
+
+    worker = SchedulerWorker(maker, runner, now_fn=fake_now)
+    assert await worker.sweep_once() == 1
+    assert called == ["reminder"]
+
+    # second sweep must not re-fire the same occurrence (idempotent run_key)
+    assert await worker.sweep_once() == 0
+
+
+def test_runner_has_types():
+    runner = JobRunner({"a": lambda: None})
+    assert runner.has("a")
+    assert not runner.has("missing")

@@ -154,3 +154,123 @@ async def test_provider_error_is_caught_in_tool(uow, demo_user):
     ctx = ToolContext(uow=uow, user_id=demo_user["user_id"], finnhub=finnhub)
     result = json.loads(await registry.execute(ctx, "get_market_quote", {"symbol": "aapl"}))
     assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_alert_create_list_delete(uow, demo_user):
+    registry = default_registry()
+    user_id = demo_user["user_id"]
+
+    async with uow:
+        ctx = ToolContext(uow=uow, user_id=user_id)
+        created = json.loads(
+            await registry.execute(ctx, "create_price_alert", {"symbol": "aapl", "percent": 4})
+        )
+        assert "price alert for AAPL" in created["message"]
+
+        listed = json.loads(await registry.execute(ctx, "list_alerts", {}))
+        assert len(listed) == 1 and listed[0]["kind"] == "price"
+        alert_id = listed[0]["id"]
+
+    async with uow:
+        ctx = ToolContext(uow=uow, user_id=user_id)
+        deleted = json.loads(
+            await registry.execute(ctx, "delete_alert", {"alert_id": str(alert_id)})
+        )
+        assert "removed" in deleted["message"]
+
+    async with uow:
+        ctx = ToolContext(uow=uow, user_id=user_id)
+        listed = json.loads(await registry.execute(ctx, "list_alerts", {}))
+        assert listed == []
+
+
+@pytest.mark.asyncio
+async def test_reminder_and_briefing_create_jobs(uow, demo_user):
+    registry = default_registry()
+    user_id = demo_user["user_id"]
+
+    async with uow:
+        ctx = ToolContext(uow=uow, user_id=user_id)
+        out = json.loads(
+            await registry.execute(
+                ctx, "create_reminder", {"text": "prep for earnings call", "time": "7:30am"}
+            )
+        )
+        assert "reminder set for 07:30" in out["message"]
+        jobs = {j.job_type: j for j in await uow.jobs.list_enabled()}
+        assert jobs["reminder"].params["text"] == "prep for earnings call"
+
+    async with uow:
+        ctx = ToolContext(uow=uow, user_id=user_id)
+        out = json.loads(await registry.execute(ctx, "create_daily_briefing", {"time": "09:15"}))
+        assert "scheduled at 09:15" in out["message"]
+        jobs = {j.job_type: j for j in await uow.jobs.list_enabled()}
+        assert jobs["daily_brief"].cron_expr == "15 9 * * *"
+
+    async with uow:
+        ctx = ToolContext(uow=uow, user_id=user_id)
+        dup = json.loads(await registry.execute(ctx, "create_daily_briefing", {"time": "10:00"}))
+        assert "already scheduled" in dup["message"]
+
+
+@pytest.mark.asyncio
+async def test_market_news_and_earnings_tools(uow, demo_user):
+    import httpx
+
+    from app.infrastructure.providers.finnhub import FinnhubClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "news" in url:
+            return httpx.Response(
+                200,
+                json=[
+                    {"headline": "Markets rally", "source": "Bloomberg", "url": "https://x"}
+                ],
+            )
+        if "earnings" in url:
+            return httpx.Response(
+                200,
+                json=[{"symbol": "NVDA", "date": "2026-08-20", "quarter": 2}],
+            )
+        return httpx.Response(500, text="unexpected")
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    finnhub = FinnhubClient("k", http=http)
+    registry = default_registry()
+
+    async with uow:
+        ctx = ToolContext(uow=uow, user_id=demo_user["user_id"], finnhub=finnhub)
+        news = json.loads(await registry.execute(ctx, "get_market_news", {"limit": 5}))
+        assert news[0]["headline"] == "Markets rally"
+
+        company = json.loads(
+            await registry.execute(ctx, "get_company_news", {"symbol": "aapl", "limit": 3})
+        )
+        assert company["symbol"] == "AAPL"
+
+        earnings = json.loads(
+            await registry.execute(ctx, "get_company_earnings", {"symbol": "nvda"})
+        )
+        assert earnings["earnings"]["date"] == "2026-08-20"
+
+
+@pytest.mark.asyncio
+async def test_get_document_contents_returns_extracted_text(uow, demo_user):
+    registry = default_registry()
+    user_id = demo_user["user_id"]
+
+    async with uow:
+        await uow.documents.create(
+            user_id,
+            filename="report.pdf",
+            doc_meta={"extracted_text": "Revenue grew 20% in Q2", "kind": "PDF"},
+        )
+        await uow.commit()
+
+    async with uow:
+        ctx = ToolContext(uow=uow, user_id=user_id)
+        contents = json.loads(await registry.execute(ctx, "get_document_contents", {"index": 0}))
+        assert contents["filename"] == "report.pdf"
+        assert "Revenue grew 20%" in contents["text"]

@@ -35,6 +35,50 @@ class FinnhubClient:
         """Company profile 2: name, exchange, industry, market cap, etc."""
         return await self._get("/stock/profile2", {"symbol": symbol})
 
+    async def general_news(self, *, limit: int = 10) -> list[dict[str, Any]]:
+        """Latest market news headlines (general category)."""
+        data = await self._get("/news", {"category": "general"})
+        if not isinstance(data, list):
+            return []
+        return [self._news_item(item) for item in data[:limit]]
+
+    async def company_news(
+        self,
+        symbol: str,
+        *,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Recent company-specific news for a ticker."""
+        params = {"symbol": symbol}
+        if from_date:
+            params["from"] = from_date
+        if to_date:
+            params["to"] = to_date
+        data = await self._get("/company-news", params)
+        if not isinstance(data, list):
+            return []
+        return [self._news_item(item) for item in data[:limit]]
+
+    async def earnings(self, symbol: str) -> dict[str, Any]:
+        """Upcoming/latest earnings dates for a ticker (single next event)."""
+        data = await self._get("/stock/earnings", {"symbol": symbol, "limit": 3})
+        if not isinstance(data, list) or not data:
+            return {}
+        return data[0]
+
+    @staticmethod
+    def _news_item(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "headline": item.get("headline"),
+            "source": item.get("source"),
+            "url": item.get("url"),
+            "datetime": item.get("datetime"),
+            "summary": (item.get("summary") or "")[:240],
+            "related": item.get("related"),
+        }
+
     async def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         try:
             response = await self._http.get(
@@ -45,10 +89,7 @@ class FinnhubClient:
             raise FinnhubError(f"Finnhub request failed: {exc}") from exc
         if response.status_code >= 400:
             raise FinnhubError(f"Finnhub error {response.status_code}: {response.text[:200]}")
-        data = response.json()
-        if not isinstance(data, dict):
-            raise FinnhubError("Finnhub returned an unexpected response shape")
-        return data
+        return response.json()
 
 
 __all__ = ["FinnhubClient", "FinnhubError"]
