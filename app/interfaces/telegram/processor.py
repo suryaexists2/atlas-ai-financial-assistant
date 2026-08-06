@@ -17,6 +17,7 @@ from aiogram import types
 
 from app.application import conversation as conversation_service
 from app.core.logging import get_logger
+from app.domain.enums import MessageRole
 from app.infrastructure.db.session import async_sessionmaker
 from app.infrastructure.db.uow import UnitOfWork
 from app.interfaces.telegram.normalized import NormalizedMessage
@@ -160,4 +161,14 @@ class UpdateProcessor:
                 },
                 priority=10,
             )
+            # Persist real replies into the conversation so the LLM context keeps a
+            # proper user->assistant->user rhythm. Fallback replies are transient
+            # errors and are not worth polluting the memory with.
+            if reply_text != self._fallback_reply:
+                await uow.conversations.add_message(
+                    conversation_id,
+                    role=MessageRole.ASSISTANT,
+                    content=reply_text,
+                    correlation_id=message.correlation_id,
+                )
             logger.info("reply_enqueued", update_id=message.update_id)

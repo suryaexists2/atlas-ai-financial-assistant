@@ -33,9 +33,11 @@ async def test_text_message_processed_end_to_end(session_factory):
         convos = await uow.conversations.list_for_user(user.id)
         assert len(convos) == 1
         messages = await uow.conversations.list_messages(convos[0].id)
-        assert len(messages) == 1
+        assert len(messages) == 2  # user msg + persisted assistant reply
         assert messages[0].content == "hello"
         assert messages[0].correlation_id == "c-1"
+        assert messages[1].role.value == "assistant"
+        assert messages[1].content == "echo:hello"
 
         result = await uow.session.execute(select(OutboundMessage))
         outbound = result.scalars().all()
@@ -57,7 +59,7 @@ async def test_duplicate_update_id_is_dropped(session_factory):
         user = await uow.users.get_by_telegram_id(777)
         convos = await uow.conversations.list_for_user(user.id)
         messages = await uow.conversations.list_messages(convos[0].id)
-        assert len(messages) == 1  # stored exactly once
+        assert len(messages) == 2  # user + assistant reply, both stored once
         result = await uow.session.execute(select(func.count()).select_from(OutboundMessage))
         assert result.scalar_one() == 1  # replied exactly once
 
@@ -86,6 +88,25 @@ async def test_voice_message_persisted_as_media(session_factory):
         messages = await uow.conversations.list_messages(convos[0].id)
         assert messages[0].content is None
         assert messages[0].media_meta["file_id"] == "f123"
+
+
+@pytest.mark.asyncio
+async def test_fallback_reply_not_persisted_to_conversation(session_factory):
+    async def fallback_composer(ctx):
+        return "FALLBACK"
+
+    processor = UpdateProcessor(session_factory, fallback_composer, fallback_reply="FALLBACK")
+    payload = tg_text_update(update_id=32, chat_id=777, message_id=32, text="hello")
+
+    assert await processor.process_update(payload, source="webhook", correlation_id="c-4b") is True
+
+    uow = UnitOfWork(session_factory)
+    async with uow:
+        user = await uow.users.get_by_telegram_id(777)
+        convos = await uow.conversations.list_for_user(user.id)
+        messages = await uow.conversations.list_messages(convos[0].id)
+        roles = [m.role.value for m in messages]
+        assert roles == ["user"]  # fallback must not pollute context
 
 
 @pytest.mark.asyncio

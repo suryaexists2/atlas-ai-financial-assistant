@@ -92,11 +92,24 @@ def _media_label(message: Any) -> str | None:
 
     kind = message.content_type
     if kind == ContentType.VOICE:
-        return "[voice message — audio transcription not available yet]"
+        return (
+            "[The user just sent a voice message. You cannot hear the audio and "
+            "there is no transcript. Politely tell them voice messages aren't supported "
+            "yet and ask them to send their question as text. Do NOT guess what the "
+            "audio said and do NOT answer any previous question on their behalf.]"
+        )
     if kind == ContentType.IMAGE:
-        return "[image message — visual analysis not available yet]"
+        return (
+            "[The user just sent an image. You cannot see it. Politely tell them "
+            "image analysis isn't supported yet and invite them to describe or type "
+            "their question as text. Do NOT guess what the image contains.]"
+        )
     if kind == ContentType.DOCUMENT:
-        return "[document message]"
+        return (
+            "[The user just sent a document. You cannot view it. Politely tell them "
+            "document handling isn't supported yet and invite them to send the "
+            "relevant details as text.]"
+        )
     return None
 
 
