@@ -94,14 +94,11 @@ async def main() -> int:
     await asyncio.to_thread(input, "  When done, press Enter to continue...")
 
     if manual_db:
-        try:
-            import asyncpg
-        except ImportError:
-            fail("database checks", "asyncpg not installed; pip install asyncpg")
-            manual_db = False
+        import asyncpg
 
-    if manual_db:
-        conn = await asyncpg.connect(database_url, timeout=10)
+        conn = await asyncpg.connect(
+            database_url.replace("+asyncpg", ""), timeout=10
+        )
         try:
             recent = await conn.fetch(
                 "SELECT content, content_type, correlation_id "
@@ -116,7 +113,7 @@ async def main() -> int:
                     f"{row['content_type']} corr={row['correlation_id']}",
                 )
             sent = await conn.fetchval(
-                "SELECT count(*) FROM outbound_messages WHERE status = 'sent'"
+                "SELECT count(*) FROM outbound_messages WHERE status = 'SENT'"
             )
             ok("outbound sent", f"{sent} sent message(s)")
         finally:
