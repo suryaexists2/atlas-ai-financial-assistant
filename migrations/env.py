@@ -10,6 +10,7 @@ from sqlalchemy import pool
 from app.core.config import get_settings
 from app.domain import entities  # noqa: F401 - ensures models are registered
 from app.infrastructure.db.base import Base
+from app.infrastructure.db.session import asyncpg_connect_args
 
 config = context.config
 
@@ -46,10 +47,12 @@ def do_run_migrations(connection) -> None:
 
 
 async def run_async_migrations() -> None:
+    url = _get_url()
     connectable = async_engine_from_config(
-        {"sqlalchemy.url": _get_url()},
+        {"sqlalchemy.url": url},
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=asyncpg_connect_args(url),
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

@@ -18,17 +18,24 @@ from app.core.config import Settings
 from app.infrastructure.db.base import Base
 
 
+def asyncpg_connect_args(database_url: str) -> dict[str, Any]:
+    """Driver connect args for a given URL.
+
+    Supabase (and similar managed Postgres) routes through pgbouncer in
+    transaction mode, which does not support asyncpg's prepared statement
+    cache; disabling it prevents DuplicatePreparedStatementError on pooled
+    transactions. Must be applied to every engine built from the URL —
+    including Alembic's — or migrations crash the same way the app did.
+    """
+    if database_url.startswith("sqlite"):
+        return {"check_same_thread": False}
+    return {"statement_cache_size": 0}
+
+
 def build_engine(settings: Settings) -> AsyncEngine:
     kwargs: dict[str, Any] = {"echo": settings.debug}
-    if settings.database_url.startswith("sqlite"):
-        kwargs["connect_args"] = {"check_same_thread": False}
-    else:
-        kwargs["connect_args"] = {
-            # Supabase uses pgbouncer in transaction mode, which does not
-            # support asyncpg's prepared statement cache. Disabling it keeps
-            # pooled transactions from throwing DuplicatePreparedStatementError.
-            "statement_cache_size": 0
-        }
+    kwargs["connect_args"] = asyncpg_connect_args(settings.database_url)
+    if not settings.database_url.startswith("sqlite"):
         kwargs.update(
             pool_size=settings.db_pool_size,
             max_overflow=settings.db_max_overflow,
