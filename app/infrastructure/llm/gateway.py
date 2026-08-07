@@ -76,6 +76,7 @@ class OpenRouterGateway(LLMGateway):
 
         last_error: LLMGatewayError | None = None
         last_empty: LLMResponse | None = None
+        self._model_errors: dict[str, str] = {}
         started = asyncio.get_running_loop().time()
         for model in self._models:
             body = dict(base_body)
@@ -110,6 +111,7 @@ class OpenRouterGateway(LLMGateway):
                     return response
                 except LLMGatewayError as exc:
                     last_error = exc
+                    self._model_errors[model] = str(exc)[:200]
                     if isinstance(exc, LLMGatewayTransientError) and attempt <= self._max_retries:
                         await asyncio.sleep(self._backoff(attempt))
                         continue
@@ -129,7 +131,8 @@ class OpenRouterGateway(LLMGateway):
         if len(self._models) == 1:
             raise last_error or LLMGatewayError("LLM provider request failed")
         raise LLMGatewayError(
-            f"All {len(self._models)} LLM model(s) failed; last error: {last_error}"
+            f"All {len(self._models)} LLM model(s) failed; "
+            + "; ".join(f"{m}={err}" for m, err in self._model_errors.items())[:700]
         ) from last_error
 
     async def _post(
@@ -160,7 +163,7 @@ class OpenRouterGateway(LLMGateway):
             )
         if response.status_code >= 400:
             raise LLMGatewayError(
-                f"LLM provider error {response.status_code}: {response.text[:200]}",
+                f"LLM provider error {response.status_code}: {response.text[:400]}",
                 status_code=response.status_code,
             )
 
