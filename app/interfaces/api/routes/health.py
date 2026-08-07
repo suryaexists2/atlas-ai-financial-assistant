@@ -20,6 +20,13 @@ async def health(settings: Settings = Depends(get_settings)) -> dict:
         "version": settings.app_version,
         "env": settings.app_env,
         "build": os.environ.get("RENDER_GIT_COMMIT"),
+        "llm": {
+            "provider": settings.llm_provider,
+            "groq_key": bool(settings.groq_api_key),
+            "openrouter_key": bool(settings.openrouter_api_key),
+            "groq_model": settings.groq_llm_model,
+            "primary_model": settings.llm_model,
+        },
     }
 
 
