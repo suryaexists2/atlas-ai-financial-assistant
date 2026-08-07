@@ -718,7 +718,10 @@ async def _schedule_meeting(ctx: ToolContext, args: dict[str, Any]) -> str:
             {"error": "I need a meeting time like 'tomorrow 10:30' or an ISO timestamp"}
         )
     start, end = parsed
-    attendees = [str(a).strip() for a in (args.get("attendees") or []) if str(a).strip()]
+    raw_attendees = args.get("attendees") or []
+    if isinstance(raw_attendees, str):
+        raw_attendees = [raw_attendees]
+    attendees = [str(a).strip() for a in raw_attendees if str(a).strip()]
 
     async def run(token: str) -> str:
         calendar = CalendarClient(token, http=ctx.google_http)
