@@ -9,14 +9,53 @@ def test_system_prompt_has_integration_honesty_guardrail():
     """The agent must never claim email/calendar/Drive actions it cannot do."""
     assert "Gmail" in SYSTEM_PROMPT
     assert "Google Calendar" in SYSTEM_PROMPT
-    assert "not connected yet" in SYSTEM_PROMPT
+    assert "may or may not be connected" in SYSTEM_PROMPT
+    assert "connect_google" in SYSTEM_PROMPT
     assert "Never claim to have sent email" in SYSTEM_PROMPT
     assert build_system_prompt() == SYSTEM_PROMPT
 
 
-def test_system_prompt_mentions_public_sheets_supported():
+def test_system_prompt_mentions_connector_tools_when_connected():
     assert "read_google_sheet" in SYSTEM_PROMPT
     assert "Public Google Sheets" in SYSTEM_PROMPT
+    for tool in ("search_emails", "find_calendar_events", "schedule_meeting", "read_drive_doc"):
+        assert tool in SYSTEM_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_context_injects_connected_accounts(uow, demo_user):
+    from app.domain.enums import IntegrationProvider
+
+    user_id = demo_user["user_id"]
+    async with uow:
+        await uow.integrations.upsert(
+            user_id, provider=IntegrationProvider.GMAIL, access_token="tok", scopes=["read"]
+        )
+        await uow.integrations.upsert(
+            user_id, provider=IntegrationProvider.CALENDAR, access_token="tok", scopes=["read"]
+        )
+        conversation = await uow.conversations.create(user_id)
+        await uow.commit()
+        conversation_id = conversation.id
+
+    async with uow:
+        messages = await build_messages(uow, user_id=user_id, conversation_id=conversation_id)
+    content = " ".join(m["content"] for m in messages)
+    assert "User connected accounts: gmail, calendar" in content
+
+
+@pytest.mark.asyncio
+async def test_context_omits_connected_accounts_when_none(uow, demo_user):
+    user_id = demo_user["user_id"]
+    async with uow:
+        conversation = await uow.conversations.create(user_id)
+        await uow.commit()
+        conversation_id = conversation.id
+
+    async with uow:
+        messages = await build_messages(uow, user_id=user_id, conversation_id=conversation_id)
+    content = " ".join(m["content"] for m in messages)
+    assert "User connected accounts:" not in content
 
 
 @pytest.mark.asyncio

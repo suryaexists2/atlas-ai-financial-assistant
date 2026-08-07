@@ -75,6 +75,23 @@ class Settings(BaseSettings):
     vision_timeout_seconds: float = 60.0
     media_download_timeout_seconds: float = 60.0
 
+    # --- Google OAuth connectors (Gmail / Calendar / Drive) ---
+    # Credentials from a Google Cloud "Web application" OAuth client. Redirect
+    # URI is derived from public_base_url (/oauth/google/callback).
+    google_oauth_client_id: str | None = Field(default=None, repr=False)
+    google_oauth_client_secret: str | None = Field(default=None, repr=False)
+    google_oauth_scopes: list[str] = Field(
+        default_factory=lambda: [
+            "openid",
+            "email",
+            "profile",
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/calendar.events",
+            "https://www.googleapis.com/auth/drive.readonly",
+        ]
+    )
+    google_oauth_state_ttl_minutes: int = 10
+
     # --- Agent Core ---
     agent_max_tool_rounds: int = 5
     agent_context_max_messages: int = 24

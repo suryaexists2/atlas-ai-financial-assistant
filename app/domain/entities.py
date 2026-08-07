@@ -270,6 +270,24 @@ class IntegrationLink(_TimestampMixin, Base):
     )
 
 
+class OAuthFlow(Base):
+    """One-time, expiring server-side OAuth state (PKCE verifier bound to a user/chat)."""
+
+    __tablename__ = "oauth_flows"
+
+    state: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    code_verifier: Mapped[str] = mapped_column(String(128))
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+    consumed: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class IngestedUpdate(Base):
     """Temporary dedup ledger for raw Telegram updates (update_id / message_id)."""
 

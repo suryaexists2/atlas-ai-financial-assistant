@@ -61,24 +61,41 @@ class IngestionPipeline:
     excerpt_chars: int = 8_000
 
     async def process(
-        self, *, file_id: str, mime_type: str | None, filename: str | None
+        self,
+        *,
+        file_id: str,
+        mime_type: str | None,
+        filename: str | None,
+        data: FileData | None = None,
     ) -> MediaIngestionResult:
-        """Downloads and parses one attachment, returning a bounded result."""
+        """Downloads and parses one attachment, returning a bounded result.
+
+        When `data` is provided (e.g. a Drive download already in memory), the
+        fetcher is skipped and the bytes go straight through the same parse /
+        chunk path used for Telegram uploads.
+        """
         try:
-            data = await self.fetcher.fetch(file_id, mime_type=mime_type, filename=filename)
+            if data is not None:
+                if len(data.raw) > self.max_bytes:
+                    return MediaIngestionResult(
+                        error="That file is too large for me to read.",
+                        error_code="too_large",
+                        meta={"filename": filename, "size": len(data.raw)},
+                    )
+            else:
+                data = await self.fetcher.fetch(file_id, mime_type=mime_type, filename=filename)
+                if len(data.raw) > self.max_bytes:
+                    return MediaIngestionResult(
+                        error="That file is too large for me to read.",
+                        error_code="too_large",
+                        meta={"file_id": file_id, "size": len(data.raw)},
+                    )
         except Exception as exc:  # noqa: BLE001 - network/provider failures are graceful
             logger.warning("media_download_failed", file_id=file_id, error=str(exc))
             return MediaIngestionResult(
                 error="Sorry, I could not download that file.",
                 error_code="download",
                 meta={"file_id": file_id},
-            )
-
-        if len(data.raw) > self.max_bytes:
-            return MediaIngestionResult(
-                error="That file is too large for me to read.",
-                error_code="too_large",
-                meta={"file_id": file_id, "size": len(data.raw)},
             )
 
         # Some fetchers (e.g. Telegram) return raw bytes without mime/filename;

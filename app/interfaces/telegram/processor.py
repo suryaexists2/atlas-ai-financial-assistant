@@ -38,6 +38,8 @@ class ReplyContext:
     # Mutable diagnostics the composer can attach (never surfaced to the user,
     # but persisted with the outbox payload for operators).
     note: dict[str, Any] = field(default_factory=dict)
+    # Contextual, single-purpose inline button (only used for OAuth connect).
+    reply_markup: dict[str, Any] | None = None
 
 
 ReplyComposer = Callable[[ReplyContext], Awaitable[str | None]]
@@ -183,6 +185,8 @@ class UpdateProcessor:
             }
             if ctx.note:
                 payload["debug"] = ctx.note
+            if ctx.reply_markup:
+                payload["reply_markup"] = ctx.reply_markup
             await uow.outbox.enqueue(
                 chat_id=message.chat_id,
                 payload=payload,

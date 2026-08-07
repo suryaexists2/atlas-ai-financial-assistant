@@ -18,6 +18,7 @@ from app.infrastructure.telegram.rate_limit import RateLimiter
 from app.infrastructure.telegram.sender import TelegramSender
 from app.interfaces.api.middleware import CorrelationMiddleware
 from app.interfaces.api.routes import health
+from app.interfaces.api.routes.oauth import router as oauth_router
 from app.interfaces.api.routes.webhook import router as webhook_router
 from app.interfaces.telegram.processor import UpdateProcessor
 from app.interfaces.telegram.responder import AgentComposer, EchoComposer
@@ -105,13 +106,31 @@ def _build_media_ingestor(settings: Settings, bot):
             filename=message.media_filename,
         )
 
-    return ingestor
+    return pipeline, ingestor
 
 
-def _build_agent_composer(settings: Settings) -> AgentComposer | None:
+def _build_google_oauth(settings: Settings):
+    """Builds the Google OAuth client when credentials are configured."""
+    from app.infrastructure.providers.google_oauth import GoogleOAuthClient
+
+    if not settings.google_oauth_client_id or not settings.google_oauth_client_secret:
+        return None
+    if not settings.public_base_url:
+        logger.warning("google_oauth_disabled_no_public_base_url")
+        return None
+    return GoogleOAuthClient(
+        settings.google_oauth_client_id,
+        settings.google_oauth_client_secret,
+        redirect_uri=f"{settings.public_base_url.rstrip('/')}/oauth/google/callback",
+        scopes=settings.google_oauth_scopes,
+    )
+
+
+def _build_agent_composer(settings: Settings, media_pipeline=None) -> AgentComposer | None:
     """Builds the agent composer when an LLM key is configured; else None."""
     from app.application.agent.core import AgentCore
     from app.application.agent.tools import default_registry
+    from app.application.onboarding import OnboardingEngine
 
     if not settings.openrouter_api_key:
         logger.warning("agent_disabled_no_llm_key")
@@ -131,6 +150,7 @@ def _build_agent_composer(settings: Settings) -> AgentComposer | None:
 
     google_sheets: GoogleSheetsClient | None = GoogleSheetsClient()
     indices: MarketIndicesClient | None = MarketIndicesClient()
+    google_oauth = _build_google_oauth(settings)
     agent = AgentCore(
         gateway,
         default_registry(),
@@ -141,8 +161,17 @@ def _build_agent_composer(settings: Settings) -> AgentComposer | None:
         max_context_messages=settings.agent_context_max_messages,
         debug_reply_errors=settings.agent_debug_reply_errors,
     )
+    onboarding = OnboardingEngine(google_connect_available=google_oauth is not None)
     return AgentComposer(
-        agent, finnhub=finnhub, sec=sec, google_sheets=google_sheets, indices=indices
+        agent,
+        finnhub=finnhub,
+        sec=sec,
+        google_sheets=google_sheets,
+        indices=indices,
+        google_oauth=google_oauth,
+        media_pipeline=media_pipeline,
+        public_base_url=settings.public_base_url,
+        onboarding=onboarding,
     )
 
 
@@ -219,17 +248,18 @@ async def lifespan(app: FastAPI):
 
         bot = Bot(token=settings.telegram_bot_token)
         app.state.telegram_bot = bot
+        media_pipeline, media_ingestor = _build_media_ingestor(settings, bot)
         composer = (
             EchoComposer()
             if settings.echo_mode
-            else (_build_agent_composer(settings) or EchoComposer())
+            else (_build_agent_composer(settings, media_pipeline=media_pipeline) or EchoComposer())
         )
         app.state.telegram_processor = UpdateProcessor(
             app.state.session_factory,
             composer,
             echo_mode=True,  # echo_mode means "reply at all"; composer decides how
             fallback_reply=settings.agent_fallback_reply,
-            media_ingestor=_build_media_ingestor(settings, bot),
+            media_ingestor=media_ingestor,
         )
         worker = _build_worker(
             settings,
@@ -282,6 +312,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(webhook_router)
+    app.include_router(oauth_router)
 
     @app.exception_handler(AppError)
     async def app_error_handler(request, exc: AppError) -> JSONResponse:

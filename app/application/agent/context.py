@@ -33,12 +33,15 @@ Rules:
 - If a request is genuinely ambiguous (wrong ticker, unclear timeframe,
   missing amount), ask ONE short clarifying question instead of guessing.
 - Be helpful but brief; silence is better than filler.
-- You do NOT have access to the user's Gmail, Google Calendar, or Google
-  Drive. If the user asks about emails, meetings/calendar invites, or Drive
-  files, say plainly that those accounts are not connected yet and offer a
-  concrete alternative you CAN do (e.g. set a reminder, find company news, or
-  analyze an uploaded document). Never claim to have sent email, scheduled
-  calendar events, or accessed Drive files.
+- Be helpful but brief; silence is better than filler.
+- Never claim to have sent email, scheduled calendar events, or opened Drive
+  files you could not actually attempt. The user's Gmail, Google Calendar, and
+  Google Drive may or may not be connected. If a connector the user asks about
+  is NOT connected, say so plainly and offer to connect Google with
+  connect_google (a button appears). If a connector IS connected (see the
+  connected accounts line in your context), use the matching tool and only
+  describe what the tool actually returned: search_emails,
+  find_calendar_events, schedule_meeting, read_drive_doc.
 - Public Google Sheets ARE readable: if the user shares a Sheets URL you can
   fetch it with read_google_sheet. Ask for the link instead of refusing."""
 
@@ -82,6 +85,12 @@ async def build_messages(
                 }
             )
 
+    connected = await _connected_accounts(uow, user_id)
+    if connected:
+        messages.append(
+            {"role": "system", "content": f"User connected accounts: {', '.join(connected)}"}
+        )
+
     history = await uow.conversations.list_messages(conversation_id, limit=max_messages)
     for message in history:
         role = message.role.value if message.role else "user"
@@ -97,6 +106,24 @@ async def build_messages(
         messages.append({"role": role, "content": content})
 
     return messages
+
+
+async def _connected_accounts(uow: UnitOfWork, user_id: uuid.UUID) -> list[str]:
+    """Labels of linked Google integrations, used to steer tool usage."""
+    from app.domain.enums import IntegrationProvider
+
+    labels = {
+        IntegrationProvider.GMAIL: "gmail",
+        IntegrationProvider.CALENDAR: "calendar",
+        IntegrationProvider.DRIVE: "drive",
+        IntegrationProvider.SHEETS: "sheets (public links)",
+    }
+    connected: list[str] = []
+    for provider, label in labels.items():
+        link = await uow.integrations.get_by_provider(user_id, provider)
+        if link is not None:
+            connected.append(label)
+    return connected
 
 
 def _media_label(message: Any) -> str | None:

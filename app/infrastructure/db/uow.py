@@ -23,6 +23,7 @@ from app.infrastructure.db.repositories.memory_jobs_outbox import (
     SqlIntegrationRepository,
     SqlJobRepository,
     SqlMemoryRepository,
+    SqlOAuthFlowRepository,
     SqlOutboxRepository,
 )
 from app.infrastructure.db.repositories.user_profile import (
@@ -45,6 +46,7 @@ class UnitOfWork:
         self.jobs: SqlJobRepository
         self.outbox: SqlOutboxRepository
         self.integrations: SqlIntegrationRepository
+        self.oauth_flows: SqlOAuthFlowRepository
         self.ingest: SqlIngestLedgerRepository
 
     def _bind_repositories(self) -> None:
@@ -58,6 +60,7 @@ class UnitOfWork:
         self.jobs = SqlJobRepository(self.session)
         self.outbox = SqlOutboxRepository(self.session)
         self.integrations = SqlIntegrationRepository(self.session)
+        self.oauth_flows = SqlOAuthFlowRepository(self.session)
         self.ingest = SqlIngestLedgerRepository(self.session)
 
     async def __aenter__(self) -> UnitOfWork:

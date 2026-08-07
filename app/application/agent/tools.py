@@ -8,22 +8,36 @@ LLM or the transport layer.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from app.application.ingestion.types import FileData
 from app.application.scheduling.cron import (
     UTC,
     compute_next_run,
     cron_from_local_time,
     extract_clock_time,
 )
-from app.domain.enums import AlertKind
+from app.domain.enums import AlertKind, IntegrationProvider
 from app.domain.repositories import MemoryRepository, WatchlistRepository
 from app.infrastructure.db.uow import UnitOfWork
 from app.infrastructure.providers.finnhub import FinnhubClient, FinnhubError
+from app.infrastructure.providers.google_calendar import CalendarClient
+from app.infrastructure.providers.google_drive import DriveClient
+from app.infrastructure.providers.google_gmail import GmailClient
+from app.infrastructure.providers.google_oauth import (
+    GoogleApiError,
+    GoogleOAuthClient,
+    GoogleOAuthError,
+    GoogleTokenExpiredError,
+    generate_state,
+    generate_verifier,
+)
 from app.infrastructure.providers.sec import SecEdgarClient, SecError
 
 
@@ -35,6 +49,14 @@ class ToolContext:
     sec: SecEdgarClient | None = None
     google_sheets: Any = None
     indices: Any = None
+    google_oauth: GoogleOAuthClient | None = None
+    media_pipeline: Any = None
+    public_base_url: str | None = None
+    chat_id: int | None = None
+    # Injectable HTTP client for connector clients (tests use MockTransport).
+    google_http: Any = None
+    # Set by connect_google; the responder renders the inline button when present.
+    oauth_connect_url: str | None = None
 
     @property
     def watchlist(self) -> WatchlistRepository:
@@ -67,6 +89,10 @@ class ToolContext:
     @property
     def integrations(self):
         return self.uow.integrations
+
+    @property
+    def oauth_flows(self):
+        return self.uow.oauth_flows
 
 
 ToolHandler = Callable[[ToolContext, dict[str, Any]], Awaitable[str]]
@@ -473,6 +499,309 @@ async def _read_google_sheet(ctx: ToolContext, args: dict[str, Any]) -> str:
     return json.dumps({"sheet_id": sheet_id, "row_count": len(rows), "rows": rows[:20]})
 
 
+# --- Google OAuth helpers (Gmail / Calendar / Drive) -------------------------
+
+
+class _GoogleNotConnected(RuntimeError):
+    def __init__(self, provider: IntegrationProvider) -> None:
+        self.provider = provider
+        super().__init__(f"{provider.value} is not connected")
+
+
+async def _linked_token(
+    ctx: ToolContext, provider: IntegrationProvider, *, force_refresh: bool = False
+) -> str:
+    """Returns a valid access token for the provider, refreshing under a
+    per-user lock when expired. One in-flight refresh per user/provider."""
+    link = await ctx.integrations.get_by_provider(ctx.user_id, provider)
+    if link is None:
+        raise _GoogleNotConnected(provider)
+    if ctx.google_oauth is None or not ctx.google_oauth.configured:
+        raise GoogleOAuthError(
+            "Google sign-in is not configured on this server", kind="not_configured"
+        )
+    async with ctx.google_oauth.lock_for(ctx.user_id):
+        fresh = await ctx.integrations.get_by_provider(ctx.user_id, provider)
+        if fresh is None:
+            raise _GoogleNotConnected(provider)
+        expires_in = fresh.expires_at is None or _as_utc(fresh.expires_at) <= dt.datetime.now(
+            UTC
+        ) + dt.timedelta(seconds=60)
+        if expires_in or force_refresh:
+            if not fresh.refresh_token:
+                raise GoogleOAuthError(
+                    "Google needs reconnecting: the stored token can no longer be refreshed",
+                    kind="invalid_grant",
+                )
+            bundle = await ctx.google_oauth.refresh_access_token(fresh.refresh_token)
+            await ctx.integrations.upsert(
+                ctx.user_id,
+                provider=provider,
+                access_token=bundle.access_token,
+                refresh_token=fresh.refresh_token,
+                scopes=fresh.scopes,
+                expires_at=dt.datetime.now(UTC) + dt.timedelta(seconds=bundle.expires_in),
+            )
+            await ctx.uow.commit()
+            return bundle.access_token
+        return fresh.access_token
+
+
+async def _google_call(ctx: ToolContext, provider: IntegrationProvider, fn: Any) -> Any:
+    """Runs `fn(token)`, refreshing once if the API rejects the token (401)."""
+    try:
+        token = await _linked_token(ctx, provider)
+        return await fn(token)
+    except GoogleTokenExpiredError:
+        token = await _linked_token(ctx, provider, force_refresh=True)
+        return await fn(token)
+
+
+def _google_failure(exc: Exception) -> str:
+    """Maps connector errors to friendly JSON without leaking token data."""
+    if isinstance(exc, _GoogleNotConnected):
+        return json.dumps(
+            {
+                "error": (
+                    f"Your {exc.provider.value} is not connected. Ask the user "
+                    "to connect Google first, or call connect_google."
+                )
+            }
+        )
+    if isinstance(exc, GoogleOAuthError):
+        if exc.kind == "invalid_grant":
+            return json.dumps(
+                {
+                    "error": (
+                        "Google access was revoked or expired. Ask the user to "
+                        "reconnect with connect_google."
+                    )
+                }
+            )
+        return json.dumps({"error": "Google sign-in is not available right now"})
+    if isinstance(exc, GoogleApiError):
+        return json.dumps({"error": f"Google API error: {exc}"})
+    return json.dumps({"error": f"A Google connector error occurred ({type(exc).__name__}: {exc})"})
+
+
+def _as_utc(value: dt.datetime) -> dt.datetime:
+    """SQLite returns naive datetimes from DateTime(timezone=True); treat them as UTC."""
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+
+
+def _parse_when(when: str | None, duration_min: int) -> tuple[dt.datetime, dt.datetime] | None:
+    """Parses natural meeting times ('tomorrow 10:30', '14:00', ISO) to UTC."""
+    text = (when or "").strip().lower()
+    if not text:
+        return None
+    try:
+        start = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=UTC)
+        return start, start + dt.timedelta(minutes=max(duration_min, 5))
+    except ValueError:
+        pass
+    match = re.search(r"(\d{1,2})[:.](\d{2})", text)
+    hour, minute = (int(match.group(1)), int(match.group(2))) if match else (9, 0)
+    now = dt.datetime.now(UTC)
+    day = now.date()
+    if "tomorrow" in text:
+        day = now.date() + dt.timedelta(days=1)
+    start = dt.datetime.combine(day, dt.time(hour, minute), tzinfo=UTC)
+    return start, start + dt.timedelta(minutes=max(duration_min, 5))
+
+
+# --- Google OAuth handlers ----------------------------------------------------
+
+
+async def _connect_google(ctx: ToolContext, args: dict[str, Any]) -> str:
+    if ctx.google_oauth is None or not ctx.google_oauth.configured:
+        return json.dumps({"error": "Google sign-in is not configured on this server"})
+    if not ctx.public_base_url:
+        return json.dumps({"error": "Google sign-in is not configured on this server"})
+    existing = await ctx.integrations.get_by_provider(ctx.user_id, IntegrationProvider.GMAIL)
+    if existing is not None:
+        return json.dumps({"message": "Google is already connected (Gmail, Calendar, and Drive)."})
+    if ctx.chat_id is None:
+        return json.dumps({"error": "cannot start Google sign-in without a chat id"})
+    state = generate_state()
+    verifier = generate_verifier()
+    await ctx.oauth_flows.create(
+        state=state,
+        user_id=ctx.user_id,
+        chat_id=ctx.chat_id,
+        code_verifier=verifier,
+        expires_at=dt.datetime.now(UTC) + dt.timedelta(minutes=10),
+    )
+    ctx.oauth_connect_url = f"{ctx.public_base_url.rstrip('/')}/oauth/google/start?state={state}"
+    await ctx.uow.commit()
+    return json.dumps(
+        {
+            "message": (
+                "Tap the button below to connect your Google account — this "
+                "grants access to Gmail, Calendar, and Drive (read-only, "
+                "except calendar events)."
+            )
+        }
+    )
+
+
+async def _disconnect_google(ctx: ToolContext, args: dict[str, Any]) -> str:
+    removed: list[str] = []
+    for provider in (
+        IntegrationProvider.GMAIL,
+        IntegrationProvider.CALENDAR,
+        IntegrationProvider.DRIVE,
+    ):
+        link = await ctx.integrations.get_by_provider(ctx.user_id, provider)
+        if link is None:
+            continue
+        if ctx.google_oauth is not None and link.refresh_token:
+            with contextlib.suppress(GoogleOAuthError):
+                # still unlink locally even if remote revoke failed
+                await ctx.google_oauth.revoke(link.refresh_token)
+        await ctx.integrations.delete(link)
+        removed.append(provider.value)
+    await ctx.uow.commit()
+    if not removed:
+        return json.dumps({"message": "There is no Google connection to disconnect."})
+    return json.dumps({"message": f"Google disconnected ({', '.join(removed)})"})
+
+
+async def _search_emails(ctx: ToolContext, args: dict[str, Any]) -> str:
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return json.dumps({"error": "a search query is required"})
+    max_results = min(int(args.get("max_results", 15)), 50)
+
+    async def run(token: str) -> str:
+        gmail = GmailClient(token, http=ctx.google_http)
+        results = await gmail.search(query, max_results=max_results)
+        if not results:
+            return json.dumps({"query": query, "emails": []})
+        messages = []
+        for item in results[:max_results]:
+            try:
+                messages.append(await gmail.get_message(item["id"]))
+            except GoogleApiError:
+                continue
+        return json.dumps({"query": query, "emails": messages})
+
+    try:
+        return await _google_call(ctx, IntegrationProvider.GMAIL, run)
+    except Exception as exc:  # noqa: BLE001 - map connector failures for the model
+        return _google_failure(exc)
+
+
+async def _find_calendar_events(ctx: ToolContext, args: dict[str, Any]) -> str:
+    days = max(1, min(int(args.get("days", 7)), 30))
+
+    async def run(token: str) -> str:
+        calendar = CalendarClient(token, http=ctx.google_http)
+        events = await calendar.list_events(days=days, max_results=30)
+        return json.dumps({"events": events, "count": len(events)})
+
+    try:
+        return await _google_call(ctx, IntegrationProvider.CALENDAR, run)
+    except Exception as exc:  # noqa: BLE001
+        return _google_failure(exc)
+
+
+async def _schedule_meeting(ctx: ToolContext, args: dict[str, Any]) -> str:
+    summary = str(args.get("summary") or "").strip()
+    if not summary:
+        return json.dumps({"error": "a meeting title is required"})
+    duration_min = max(5, int(args.get("duration_min", 60)))
+    parsed = _parse_when(args.get("when"), duration_min)
+    if parsed is None:
+        return json.dumps(
+            {"error": "I need a meeting time like 'tomorrow 10:30' or an ISO timestamp"}
+        )
+    start, end = parsed
+    attendees = [str(a).strip() for a in (args.get("attendees") or []) if str(a).strip()]
+
+    async def run(token: str) -> str:
+        calendar = CalendarClient(token, http=ctx.google_http)
+        event = await calendar.create_event(
+            summary=summary,
+            start=start,
+            end=end,
+            description=args.get("description"),
+            attendees=attendees or None,
+        )
+        return json.dumps(
+            {
+                "event_id": event.get("id"),
+                "summary": event.get("summary"),
+                "start": (event.get("start") or {}).get("dateTime"),
+                "end": (event.get("end") or {}).get("dateTime"),
+                "link": event.get("htmlLink"),
+            }
+        )
+
+    try:
+        return await _google_call(ctx, IntegrationProvider.CALENDAR, run)
+    except Exception as exc:  # noqa: BLE001
+        return _google_failure(exc)
+
+
+async def _read_drive_doc(ctx: ToolContext, args: dict[str, Any]) -> str:
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return json.dumps({"error": "a search query is required"})
+
+    async def run(token: str) -> str:
+        drive = DriveClient(token, http=ctx.google_http)
+        files = await drive.search(query, max_results=5)
+        if not files:
+            return json.dumps({"query": query, "matches": [], "error": "no files found in Drive"})
+        chosen = files[0]
+        raw = await drive.download(
+            chosen["id"],
+            mime_type=chosen.get("mime_type"),
+            filename=chosen.get("name") or "drive_file",
+        )
+        if ctx.media_pipeline is None:
+            return json.dumps(
+                {
+                    "matches": files,
+                    "error": "document analysis is not available right now",
+                }
+            )
+        result = await ctx.media_pipeline.process(
+            file_id="",
+            mime_type=chosen.get("mime_type"),
+            filename=chosen.get("name"),
+            data=FileData(
+                raw=raw,
+                mime_type=chosen.get("mime_type"),
+                filename=chosen.get("name") or "drive_file",
+            ),
+        )
+        if result.error is not None or result.document is None:
+            return json.dumps(
+                {
+                    "matches": files,
+                    "error": result.error or "could not read that file",
+                    "error_code": result.error_code,
+                }
+            )
+        return json.dumps(
+            {
+                "query": query,
+                "matches": files,
+                "chosen": chosen,
+                "kind": result.document.kind.value,
+                "content": (result.content or result.document.text)[:8_000],
+            }
+        )
+
+    try:
+        return await _google_call(ctx, IntegrationProvider.DRIVE, run)
+    except Exception as exc:  # noqa: BLE001
+        return _google_failure(exc)
+
+
 DEFAULT_TOOLS: list[Tool] = [
     Tool(
         name="get_market_quote",
@@ -707,6 +1036,78 @@ DEFAULT_TOOLS: list[Tool] = [
         ),
         parameters={"url": {"type": "string", "description": "Optional Google Sheets URL"}},
         handler=_read_google_sheet,
+    ),
+    Tool(
+        name="connect_google",
+        description=(
+            "Start connecting the user's Google account (Gmail, Calendar, Drive). "
+            "Use when the user wants to search emails, manage meetings, or read "
+            "Drive files, and nothing is connected yet. A button appears for sign-in."
+        ),
+        parameters={},
+        handler=_connect_google,
+    ),
+    Tool(
+        name="disconnect_google",
+        description=(
+            "Disconnect the user's Google account: revokes access and removes "
+            "stored credentials for Gmail, Calendar, and Drive."
+        ),
+        parameters={},
+        handler=_disconnect_google,
+    ),
+    Tool(
+        name="search_emails",
+        description=(
+            "Search the user's Gmail and return matching messages (from, subject, "
+            "date, body excerpt). Use a Gmail-style query like 'subject:tesla' or "
+            "plain terms like 'tesla earnings'."
+        ),
+        parameters={
+            "query": {"type": "string", "description": "Gmail search query"},
+            "max_results": {"type": "integer", "description": "Max messages (default 15)"},
+        },
+        required=["query"],
+        handler=_search_emails,
+    ),
+    Tool(
+        name="find_calendar_events",
+        description=(
+            "List the user's upcoming Google Calendar events (default: next 7 days) "
+            "for meeting preparation."
+        ),
+        parameters={"days": {"type": "integer", "description": "Lookahead days (default 7)"}},
+        handler=_find_calendar_events,
+    ),
+    Tool(
+        name="schedule_meeting",
+        description=(
+            "Create a Google Calendar event for the user. Pass a title, a natural "
+            "time like 'tomorrow 10:30' or an ISO timestamp, and optional attendees."
+        ),
+        parameters={
+            "summary": {"type": "string", "description": "Meeting title"},
+            "when": {"type": "string", "description": "e.g. 'tomorrow 10:30' or ISO"},
+            "duration_min": {"type": "integer", "description": "Duration in minutes (default 60)"},
+            "description": {"type": "string", "description": "Optional agenda/notes"},
+            "attendees": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional emails",
+            },
+        },
+        required=["summary", "when"],
+        handler=_schedule_meeting,
+    ),
+    Tool(
+        name="read_drive_doc",
+        description=(
+            "Search the user's Google Drive for a file (PDF, spreadsheet, text, "
+            "Google Doc/Sheet) and read/summarize its contents."
+        ),
+        parameters={"query": {"type": "string", "description": "Drive search terms or filename"}},
+        required=["query"],
+        handler=_read_drive_doc,
     ),
 ]
 

@@ -6,7 +6,7 @@ import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,7 @@ from app.domain.entities import (
     IntegrationLink,
     JobEvent,
     Memory,
+    OAuthFlow,
     OutboundMessage,
     ScheduledJob,
 )
@@ -32,6 +33,7 @@ from app.domain.repositories import (
     IntegrationRepository,
     JobRepository,
     MemoryRepository,
+    OAuthFlowRepository,
     OutboxRepository,
 )
 
@@ -335,6 +337,58 @@ class SqlIntegrationRepository(IntegrationRepository):
     async def delete(self, link: IntegrationLink) -> None:
         await self.session.delete(link)
         await self.session.flush()
+
+
+class SqlOAuthFlowRepository(OAuthFlowRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create(
+        self,
+        *,
+        state: str,
+        user_id: uuid.UUID,
+        chat_id: int,
+        code_verifier: str,
+        expires_at: dt.datetime,
+    ) -> OAuthFlow:
+        flow = OAuthFlow(
+            state=state,
+            user_id=user_id,
+            chat_id=chat_id,
+            code_verifier=code_verifier,
+            expires_at=expires_at,
+            consumed=False,
+        )
+        self.session.add(flow)
+        await self.session.flush()
+        return flow
+
+    async def consume(self, state: str) -> OAuthFlow | None:
+        """One-time consume: returns the flow only if it exists, is unconsumed,
+        and is not expired; the row is removed so it can never be reused."""
+        result = await self.session.execute(select(OAuthFlow).where(OAuthFlow.state == state))
+        flow = result.scalar_one_or_none()
+        if flow is None or flow.consumed:
+            return None
+        expires = flow.expires_at
+        if expires is not None and expires.tzinfo is None:
+            expires = expires.replace(tzinfo=dt.UTC)
+        if expires is not None and expires <= dt.datetime.now(dt.UTC):
+            return None
+        flow.consumed = True
+        await self.session.delete(flow)
+        await self.session.flush()
+        return flow
+
+    async def delete_expired(self, before: dt.datetime) -> int:
+        result = await self.session.execute(delete(OAuthFlow).where(OAuthFlow.expires_at < before))
+        await self.session.flush()
+        return result.rowcount or 0
+
+    async def get_by_state(self, state: str) -> OAuthFlow | None:
+        result = await self.session.execute(select(OAuthFlow).where(OAuthFlow.state == state))
+        return result.scalar_one_or_none()
 
 
 class SqlIngestLedgerRepository(IngestLedgerRepository):

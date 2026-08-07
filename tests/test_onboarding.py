@@ -106,6 +106,39 @@ async def test_completed_profile_stays_completed(uow):
         assert reply.text is None
 
 
+async def test_google_connect_step_is_optional_and_skippable(uow):
+    async with uow:
+        user_id = await make_user(uow)
+        engine = OnboardingEngine(google_connect_available=True)
+        turns = await run_flow(
+            uow,
+            user_id,
+            ["I'm an Analyst", "tech", "AAPL", "8:00am", "skip", "skip"],
+            engine,
+        )
+        assert turns[-2].text is not None
+        assert "connect your Google account" in turns[-2].text  # optional step shown
+        assert turns[-2].still_onboarding
+        assert turns[-1].completed
+        assert "You're all set" in turns[-1].text
+        profile = await uow.profiles.get_by_user_id(user_id)
+        assert profile.onboarding_status == OnboardingStatus.COMPLETED
+
+
+async def test_google_connect_step_accepts_yes(uow):
+    async with uow:
+        user_id = await make_user(uow)
+        engine = OnboardingEngine(google_connect_available=True)
+        turns = await run_flow(
+            uow,
+            user_id,
+            ["Investor", "semiconductors", "NVDA", "9:00", "skip", "yes connect it"],
+            engine,
+        )
+        assert turns[-1].completed
+        assert "You're all set" in turns[-1].text
+
+
 # --- parsing helpers ---------------------------------------------------------
 
 

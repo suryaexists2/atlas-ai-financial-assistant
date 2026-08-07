@@ -118,6 +118,11 @@ _BRIEFING_THEN = (
     "'remind me an hour before Apple's earnings' or 'alert me when AAPL moves "
     "more than 5%'. Or say 'skip'."
 )
+_CONNECT_THEN = (
+    "One optional step: connect your Google account (Gmail, Calendar, Drive)? "
+    "Then I can search your emails, schedule meetings, and read Drive files "
+    "for you. Say 'skip' — you can connect anytime later by simply asking."
+)
 _DONE = (
     "You're all set{name}.\n\n"
     "You can ask things like:\n"
@@ -132,8 +137,14 @@ _DONE = (
 class OnboardingEngine:
     """Stateful, LLM-free onboarding. Call once per incoming message."""
 
-    def __init__(self, *, default_briefing_time: str = "08:00") -> None:
+    def __init__(
+        self,
+        *,
+        default_briefing_time: str = "08:00",
+        google_connect_available: bool = False,
+    ) -> None:
         self._default_briefing_time = default_briefing_time
+        self._google_connect_available = google_connect_available
 
     async def turn(
         self,
@@ -225,12 +236,29 @@ class OnboardingEngine:
             await self._set_step(uow, user_id, "reminders")
             return OnboardingReply(text=_BRIEFING_THEN, still_onboarding=True)
 
+        if step == "reminders":
+            if self._google_connect_available:
+                await self._set_step(uow, user_id, "connect")
+                return OnboardingReply(text=_CONNECT_THEN, still_onboarding=True)
+            return await self._finish(uow, user_id)
+
+        if step == "connect":
+            # Any answer (including 'skip') is fine; the user can also connect
+            # later by asking the agent, so the optional step never blocks.
+            return await self._finish(uow, user_id)
+
         # "reminders" (and any unknown/unexpected state): finalize.
+        return await self._finish(uow, user_id)
+
+    async def _finish(self, uow: UnitOfWork, user_id: uuid.UUID) -> OnboardingReply:
         name = ""
         user = await uow.users.get_by_id(user_id)
         if user is not None and user.first_name:
             name = f", {user.first_name}"
-        briefing_time = profile.briefing_time or self._default_briefing_time
+        profile = await uow.profiles.get_by_user_id(user_id)
+        briefing_time = (
+            profile.briefing_time if profile is not None else None
+        ) or self._default_briefing_time
         await self._complete(uow, user_id)
         return OnboardingReply(
             text=_DONE.format(name=name, brief=f"briefing at {briefing_time}"),

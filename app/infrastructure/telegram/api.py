@@ -37,7 +37,12 @@ class RetryableTelegramError(TelegramApiError):
 
 class TelegramApiPort(Protocol):
     async def send_message(
-        self, *, chat_id: int, text: str, parse_mode: str | None = None
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        parse_mode: str | None = None,
+        reply_markup: dict[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -48,11 +53,16 @@ class AiogramTelegramApi:
         self._bot = bot
 
     async def send_message(
-        self, *, chat_id: int, text: str, parse_mode: str | None = None
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        parse_mode: str | None = None,
+        reply_markup: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         try:
             message = await self._bot.send_message(
-                chat_id=chat_id, text=text, parse_mode=parse_mode
+                chat_id=chat_id, text=text, parse_mode=parse_mode, reply_markup=reply_markup
             )
         except TelegramRetryAfter as exc:
             raise RetryableTelegramError(str(exc), retry_after=float(exc.retry_after)) from exc

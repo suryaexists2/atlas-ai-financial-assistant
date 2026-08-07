@@ -17,6 +17,7 @@ from app.domain.entities import (
     IntegrationLink,
     Memory,
     Message,
+    OAuthFlow,
     OutboundMessage,
     ScheduledJob,
     User,
@@ -267,6 +268,33 @@ class IngestLedgerRepository(abc.ABC):
         """Persists the update; returns False if update_id or (chat, message) is a duplicate."""
 
 
+class OAuthFlowRepository(abc.ABC):
+    """Server-side storage for one-time, expiring OAuth states."""
+
+    @abc.abstractmethod
+    async def create(
+        self,
+        *,
+        state: str,
+        user_id: uuid.UUID,
+        chat_id: int,
+        code_verifier: str,
+        expires_at: dt.datetime,
+    ) -> OAuthFlow: ...
+
+    @abc.abstractmethod
+    async def consume(self, state: str) -> OAuthFlow | None:
+        """Atomically consumes a state: returns it (and marks consumed) only if
+        it exists, is not consumed, and is not expired; else None. One-time use."""
+
+    @abc.abstractmethod
+    async def get_by_state(self, state: str) -> OAuthFlow | None:
+        """Peek at a flow without consuming it (start/redirect validation)."""
+
+    @abc.abstractmethod
+    async def delete_expired(self, before: dt.datetime) -> int: ...
+
+
 __all__ = [
     "UserRepository",
     "ProfileRepository",
@@ -278,5 +306,6 @@ __all__ = [
     "JobRepository",
     "OutboxRepository",
     "IntegrationRepository",
+    "OAuthFlowRepository",
     "IngestLedgerRepository",
 ]

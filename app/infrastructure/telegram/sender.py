@@ -46,12 +46,22 @@ class TelegramSender:
             logger.error("unsupported_outbound_payload", type=message_type)
             return False
 
+        # Contextual, single-purpose inline button (e.g. "Connect Google" OAuth).
+        # The outbox column is JSON, so nested dicts round-trip intact.
+        reply_markup: dict[str, Any] | None = payload.get("reply_markup")
+        if reply_markup is not None and not isinstance(reply_markup, dict):
+            logger.error("unsupported_reply_markup")
+            return False
+
         attempt = 0
         while attempt < self._max_attempts:
             attempt += 1
             await self._rate_limiter.acquire(chat_id)
             try:
-                await self._api.send_message(chat_id=chat_id, text=text)
+                kwargs: dict[str, Any] = {"chat_id": chat_id, "text": text}
+                if reply_markup is not None:
+                    kwargs["reply_markup"] = reply_markup
+                await self._api.send_message(**kwargs)
                 logger.info(
                     "telegram_sent",
                     chat_id=chat_id,

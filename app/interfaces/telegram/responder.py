@@ -42,6 +42,9 @@ class AgentComposer:
         sec: SecEdgarClient | None = None,
         google_sheets: Any = None,
         indices: Any = None,
+        google_oauth: Any = None,
+        media_pipeline: Any = None,
+        public_base_url: str | None = None,
         onboarding: OnboardingEngine | None = None,
     ) -> None:
         self._agent = agent
@@ -49,6 +52,9 @@ class AgentComposer:
         self._sec = sec
         self._google_sheets = google_sheets
         self._indices = indices
+        self._google_oauth = google_oauth
+        self._media_pipeline = media_pipeline
+        self._public_base_url = public_base_url
         self._onboarding = onboarding or OnboardingEngine()
 
     async def __call__(self, ctx: ReplyContext) -> str | None:
@@ -72,6 +78,10 @@ class AgentComposer:
             sec=self._sec,
             google_sheets=self._google_sheets,
             indices=self._indices,
+            google_oauth=self._google_oauth,
+            media_pipeline=self._media_pipeline,
+            public_base_url=self._public_base_url,
+            chat_id=ctx.message.chat_id,
         )
         reply = await self._agent.run(
             ctx.uow,
@@ -79,6 +89,19 @@ class AgentComposer:
             conversation_id=ctx.conversation_id,
             tool_context=tool_ctx,
         )
+        if tool_ctx.oauth_connect_url:
+            # Contextual, single-purpose OAuth button — the only inline button
+            # the bot ever emits; everything else stays plain text.
+            ctx.reply_markup = {
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": "Connect Google",
+                            "url": tool_ctx.oauth_connect_url,
+                        }
+                    ]
+                ]
+            }
         if getattr(self._agent, "last_error", None):
             ctx.note["agent_error"] = self._agent.last_error
             ctx.note["fallback_used"] = True
