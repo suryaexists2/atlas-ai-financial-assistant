@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from typing import Any
 
@@ -21,6 +22,21 @@ from app.infrastructure.db.uow import UnitOfWork
 from app.infrastructure.llm.gateway import LLMGatewayError
 
 logger = get_logger(__name__)
+
+# Turns that clearly need live market data. If such a turn completes without a
+# single tool call, the model almost certainly invented the answer, so the loop
+# forces one re-prompt instead of returning fabricated numbers.
+_MARKET_INTENT_RE = re.compile(
+    r"(?i)\b(?:quote|price|stock|stocks|market|trading|ticker|earnings|filing|filings|"
+    r"index|indices|nifty|sensex)\b|\$"
+)
+
+
+def _last_user_text(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            return str(message.get("content") or "")
+    return ""
 
 
 class AgentCore:
@@ -81,6 +97,9 @@ class AgentCore:
         )
         tool_ctx = tool_context or ToolContext(uow=uow, user_id=user_id)
 
+        any_tool_called = False
+        market_retry_done = False
+
         try:
             for _ in range(self._max_tool_rounds + 1):
                 try:
@@ -98,6 +117,31 @@ class AgentCore:
                     text = (response.content or "").strip()
                     if text:
                         self.last_model = response.model
+                        if (
+                            not market_retry_done
+                            and not any_tool_called
+                            and _MARKET_INTENT_RE.search(_last_user_text(messages))
+                        ):
+                            market_retry_done = True
+                            logger.warning(
+                                "agent_market_turn_without_tool_retrying",
+                                model=response.model,
+                            )
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "The user is asking about live market data, but you "
+                                        "answered without calling any market tool. Call the "
+                                        "tool that matches the question NOW (get_market_quote, "
+                                        "get_market_news, get_company_news, get_company_earnings, "
+                                        "get_company_filings, get_market_indices), then answer "
+                                        "from its real output. Never invent prices, earnings, "
+                                        "or news."
+                                    ),
+                                }
+                            )
+                            continue
                         return text
                     logger.warning(
                         "agent_empty_reply_falling_back",
@@ -131,6 +175,7 @@ class AgentCore:
                 messages.append(assistant_msg)
 
                 for call in response.tool_calls:
+                    any_tool_called = True
                     result = await self._tools.execute(tool_ctx, call.name, call.arguments)
                     logger.info(
                         "agent_tool_executed",

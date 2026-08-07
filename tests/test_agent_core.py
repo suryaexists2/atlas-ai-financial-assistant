@@ -236,6 +236,85 @@ async def test_empty_reply_returns_fallback(uow, demo_user):
 
 
 @pytest.mark.asyncio
+async def test_market_turn_without_tool_forces_retry(uow, demo_user):
+    """A market question answered with zero tool calls gets one re-prompt so
+    the model cannot fabricate prices."""
+    async with uow:
+        conversation = await uow.conversations.create(demo_user["user_id"])
+        await uow.conversations.add_message(
+            conversation.id, role="user", content="What is NVDA trading at?", content_type="text"
+        )
+        await uow.commit()
+        conversation_id = conversation.id
+
+    gateway = FakeGateway(
+        [
+            LLMResponse(content="NVDA is at $125.50."),  # invented, no tool called
+            LLMResponse(
+                content=None,
+                tool_calls=[
+                    LLMToolCall(
+                        id="t_2", name="get_market_quote", arguments={"symbol": "NVDA"}
+                    )
+                ],
+            ),
+            LLMResponse(content="NVDA is at $222.47."),
+        ]
+    )
+    agent = make_agent(gateway)
+    async with uow:
+        reply = await agent.run(
+            uow,
+            user_id=demo_user["user_id"],
+            conversation_id=conversation_id,
+            tool_context=ToolContext(uow=uow, user_id=demo_user["user_id"]),
+        )
+    assert reply == "NVDA is at $222.47."
+    assert len(gateway.requests) == 3
+    forced = [
+        m
+        for m in gateway.requests[1]
+        if m["role"] == "user" and "Never invent" in m["content"]
+    ]
+    assert forced, "market retry message must be appended before the tool round"
+
+
+@pytest.mark.asyncio
+async def test_market_turn_with_tool_call_not_retried(uow, demo_user):
+    async with uow:
+        conversation = await uow.conversations.create(demo_user["user_id"])
+        await uow.conversations.add_message(
+            conversation.id, role="user", content="What is NVDA trading at?", content_type="text"
+        )
+        await uow.commit()
+        conversation_id = conversation.id
+
+    gateway = FakeGateway(
+        [
+            LLMResponse(
+                content=None,
+                tool_calls=[
+                    LLMToolCall(
+                        id="t_3", name="get_market_quote", arguments={"symbol": "NVDA"}
+                    )
+                ],
+            ),
+            LLMResponse(content="NVDA is at $222.47."),
+        ]
+    )
+    agent = make_agent(gateway)
+    async with uow:
+        reply = await agent.run(
+            uow,
+            user_id=demo_user["user_id"],
+            conversation_id=conversation_id,
+            tool_context=ToolContext(uow=uow, user_id=demo_user["user_id"]),
+        )
+    assert reply == "NVDA is at $222.47."
+    assert len(gateway.requests) == 2  # no forced re-prompt when tools were used
+
+
+@pytest.mark.asyncio
 async def test_tool_execution_feeds_valid_json(uow, demo_user):
     """The serialized tool_calls appended to messages must be loadable JSON."""
     async with uow:

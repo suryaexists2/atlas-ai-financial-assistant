@@ -43,14 +43,14 @@ class Settings(BaseSettings):
     # Paid first for quality while credits exist; the `:free` routes cost $0 so
     # the bot keeps answering even when the account balance is exhausted.
     # Order matters: nvidia/nemotron-3-ultra-550b-a55b:free is a proven tool
-    # caller, so it sits before the smaller/weaker free routes.
+    # caller, so it sits before the smaller/weaker free routes. super-120b is
+    # excluded: it skips tool calls on market turns and fabricates quotes.
     llm_fallback_models: list[str] = Field(
         default_factory=lambda: [
             "openai/gpt-4o-mini",
             "google/gemma-4-31b-it:free",
             "nvidia/nemotron-3-ultra-550b-a55b:free",
             "google/gemma-4-26b-a4b-it:free",
-            "nvidia/nemotron-3-super-120b-a12b:free",
             "nvidia/nemotron-nano-9b-v2:free",
         ]
     )
