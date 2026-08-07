@@ -75,15 +75,33 @@ class OpenRouterGateway(LLMGateway):
             base_body["tool_choice"] = "auto"
 
         last_error: LLMGatewayError | None = None
+        started = asyncio.get_running_loop().time()
         for model in self._models:
             body = dict(base_body)
             body["model"] = model
             attempt = 0
             while True:
                 attempt += 1
+                logger.info(
+                    "llm_request_sent",
+                    model=model,
+                    attempt=attempt,
+                    n_messages=len(messages),
+                    n_tools=len(tools or []),
+                )
                 try:
-                    message, model_used, usage = await self._post(body)
-                    return self._parse_response(message, model_used, usage)
+                    message, model_used, usage, finish_reason = await self._post(body)
+                    response = self._parse_response(message, model_used, usage, finish_reason)
+                    logger.info(
+                        "llm_response_received",
+                        model=model_used,
+                        ms=round((asyncio.get_running_loop().time() - started) * 1000),
+                        finish_reason=response.finish_reason,
+                        n_tool_calls=len(response.tool_calls),
+                        content_chars=len(response.content or ""),
+                        usage=usage,
+                    )
+                    return response
                 except LLMGatewayError as exc:
                     last_error = exc
                     if isinstance(exc, LLMGatewayTransientError) and attempt <= self._max_retries:
@@ -105,13 +123,20 @@ class OpenRouterGateway(LLMGateway):
 
     async def _post(
         self, body: dict[str, Any]
-    ) -> tuple[dict[str, Any], str | None, dict[str, Any]]:
+    ) -> tuple[dict[str, Any], str | None, dict[str, Any], str | None]:
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
         try:
+            t0 = asyncio.get_running_loop().time()
             response = await self._http.post(self._base_url, json=body, headers=headers)
+            logger.info(
+                "llm_http_completed",
+                status=response.status_code,
+                ms=round((asyncio.get_running_loop().time() - t0) * 1000),
+                body_chars=len(response.text),
+            )
         except httpx.TimeoutException as exc:
             raise LLMGatewayError(f"LLM request timed out: {exc}") from exc
         except httpx.HTTPError as exc:
@@ -134,10 +159,15 @@ class OpenRouterGateway(LLMGateway):
             choice.get("message", {}),
             payload.get("model"),
             payload.get("usage", {}),
+            choice.get("finish_reason"),
         )
 
     def _parse_response(
-        self, message: dict[str, Any], model: str | None, usage: dict[str, Any]
+        self,
+        message: dict[str, Any],
+        model: str | None,
+        usage: dict[str, Any],
+        finish_reason: str | None = None,
     ) -> LLMResponse:
         tool_calls: list[LLMToolCall] = []
         for raw in message.get("tool_calls") or []:
@@ -160,7 +190,7 @@ class OpenRouterGateway(LLMGateway):
             tool_calls=tool_calls,
             model=model,
             usage=usage,
-            finish_reason=None,
+            finish_reason=finish_reason,
         )
 
     def _backoff(self, attempt: int) -> float:

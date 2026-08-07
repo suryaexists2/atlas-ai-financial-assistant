@@ -126,6 +126,7 @@ def _build_agent_composer(settings: Settings) -> AgentComposer | None:
         temperature=settings.llm_temperature,
         fallback_reply=settings.agent_fallback_reply,
         max_context_messages=settings.agent_context_max_messages,
+        debug_reply_errors=settings.agent_debug_reply_errors,
     )
     return AgentComposer(
         agent, finnhub=finnhub, sec=sec, google_sheets=google_sheets, indices=indices

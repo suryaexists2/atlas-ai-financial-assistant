@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     agent_max_tool_rounds: int = 5
     agent_context_max_messages: int = 24
     agent_fallback_reply: str = "Sorry — I hit a temporary hiccup. Give me a moment and try again."
+    # While true, fallback replies carry the real failure reason (debug only).
+    agent_debug_reply_errors: bool = False
 
     # Scheduler: how long after a scheduled fire time a job may still run.
     scheduler_misfire_grace_seconds: int = 60

@@ -8,6 +8,7 @@ state changes happen through the injected uow/repos and provider clients.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from typing import Any
@@ -33,6 +34,7 @@ class AgentCore:
         temperature: float = 0.3,
         fallback_reply: str = "Sorry — I hit a temporary hiccup. Try again in a moment.",
         max_context_messages: int = 24,
+        debug_reply_errors: bool = False,
     ) -> None:
         self._gateway = gateway
         self._tools = tools
@@ -41,6 +43,17 @@ class AgentCore:
         self._temperature = temperature
         self._fallback_reply = fallback_reply
         self._max_context_messages = max_context_messages
+        self._debug_reply_errors = debug_reply_errors
+        self.last_error: str | None = None
+
+    def _degrade(self, reason: str) -> str:
+        """Records why the turn fell back and returns the reply (optionally with
+        the real error appended while debugging)."""
+        self.last_error = reason
+        logger.warning("agent_fallback_triggered", reason=reason)
+        if self._debug_reply_errors:
+            return f"{self._fallback_reply}\n\n[debug {reason[:400]}]"
+        return self._fallback_reply
 
     async def run(
         self,
@@ -51,11 +64,18 @@ class AgentCore:
         tool_context: ToolContext | None = None,
     ) -> str:
         """Runs a turn and always returns a reply string (fallback on failure)."""
+        self.last_error = None
+        started = asyncio.get_running_loop().time()
         messages = await build_messages(
             uow,
             user_id=user_id,
             conversation_id=conversation_id,
             max_messages=self._max_context_messages,
+        )
+        logger.info(
+            "agent_context_built",
+            ms=round((asyncio.get_running_loop().time() - started) * 1000),
+            n_messages=len(messages),
         )
         tool_ctx = tool_context or ToolContext(uow=uow, user_id=user_id)
 
@@ -70,14 +90,14 @@ class AgentCore:
                     )
                 except LLMGatewayError as exc:
                     logger.warning("agent_gateway_error", error=str(exc))
-                    return self._fallback_reply
+                    return self._degrade(f"gateway_error: {exc}")
 
                 if not response.tool_calls:
                     text = (response.content or "").strip()
                     if text:
                         return text
                     logger.warning("agent_empty_reply_falling_back")
-                    return self._fallback_reply
+                    return self._degrade("empty_reply content  neither text nor tool_calls")
 
                 # Assistant message carrying the tool calls, then results.
                 assistant_msg: dict[str, Any] = {
@@ -111,12 +131,12 @@ class AgentCore:
                             "content": result,
                         }
                     )
-        except Exception:  # noqa: BLE001 - never leave the user without a reply
+        except Exception as exc:  # noqa: BLE001 - never leave the user without a reply
             logger.exception("agent_turn_error_falling_back")
-            return self._fallback_reply
+            return self._degrade(f"turn_exception: {type(exc).__name__}: {exc}")
 
         logger.warning("agent_tool_rounds_exhausted", rounds=self._max_tool_rounds)
-        return self._fallback_reply
+        return self._degrade("tool_rounds_exhausted")
 
 
 __all__ = ["AgentCore"]

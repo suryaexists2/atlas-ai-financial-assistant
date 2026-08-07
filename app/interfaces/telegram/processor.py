@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from aiogram import types
@@ -35,6 +35,9 @@ class ReplyContext:
     uow: UnitOfWork
     user_id: uuid.UUID
     conversation_id: uuid.UUID
+    # Mutable diagnostics the composer can attach (never surfaced to the user,
+    # but persisted with the outbox payload for operators).
+    note: dict[str, Any] = field(default_factory=dict)
 
 
 ReplyComposer = Callable[[ReplyContext], Awaitable[str | None]]
@@ -160,27 +163,29 @@ class UpdateProcessor:
         if message.is_media and message_id is not None:
             await self._ingest_media(uow, message, message_id)
         reply_text: str | None = None
+        ctx = ReplyContext(
+            message=message,
+            uow=uow,
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
         try:
-            reply_text = await self._reply_composer(
-                ReplyContext(
-                    message=message,
-                    uow=uow,
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                )
-            )
+            reply_text = await self._reply_composer(ctx)
         except Exception:  # noqa: BLE001 - never let composer failure break ingestion
             logger.exception("reply_composer_failed", update_id=message.update_id)
 
         reply_text = reply_text or self._fallback_reply
         if reply_text:
+            payload: dict[str, Any] = {
+                "type": "text",
+                "text": reply_text,
+                "correlation_id": message.correlation_id,
+            }
+            if ctx.note:
+                payload["debug"] = ctx.note
             await uow.outbox.enqueue(
                 chat_id=message.chat_id,
-                payload={
-                    "type": "text",
-                    "text": reply_text,
-                    "correlation_id": message.correlation_id,
-                },
+                payload=payload,
                 priority=10,
             )
             # Persist real replies into the conversation so the LLM context keeps a

@@ -73,12 +73,16 @@ class AgentComposer:
             google_sheets=self._google_sheets,
             indices=self._indices,
         )
-        return await self._agent.run(
+        reply = await self._agent.run(
             ctx.uow,
             user_id=ctx.user_id,
             conversation_id=ctx.conversation_id,
             tool_context=tool_ctx,
         )
+        if getattr(self._agent, "last_error", None):
+            ctx.note["agent_error"] = self._agent.last_error
+            ctx.note["fallback_used"] = True
+        return reply
 
 
 __all__ = ["AgentComposer", "EchoComposer", "dev_echo_reply"]
