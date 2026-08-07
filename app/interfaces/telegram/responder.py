@@ -141,6 +141,8 @@ class AgentComposer:
         if getattr(self._agent, "last_error", None):
             ctx.note["agent_error"] = self._agent.last_error
             ctx.note["fallback_used"] = True
+        if getattr(self._agent, "last_model", None):
+            ctx.note["model"] = self._agent.last_model
         return reply
 
 

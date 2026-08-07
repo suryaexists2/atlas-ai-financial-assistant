@@ -45,6 +45,7 @@ class AgentCore:
         self._max_context_messages = max_context_messages
         self._debug_reply_errors = debug_reply_errors
         self.last_error: str | None = None
+        self.last_model: str | None = None
 
     def _degrade(self, reason: str) -> str:
         """Records why the turn fell back and returns the reply (optionally with
@@ -65,6 +66,7 @@ class AgentCore:
     ) -> str:
         """Runs a turn and always returns a reply string (fallback on failure)."""
         self.last_error = None
+        self.last_model = None
         started = asyncio.get_running_loop().time()
         messages = await build_messages(
             uow,
@@ -95,6 +97,7 @@ class AgentCore:
                 if not response.tool_calls:
                     text = (response.content or "").strip()
                     if text:
+                        self.last_model = response.model
                         return text
                     logger.warning(
                         "agent_empty_reply_falling_back",
