@@ -265,7 +265,7 @@ def test_config_defaults_groq_stack():
     settings = Settings(_env_file=None)
     assert settings.llm_provider == "groq"
     assert settings.groq_llm_model == "llama-3.3-70b-versatile"
-    assert settings.groq_llm_fallback == "llama-3.1-8b-instant"
+    assert settings.groq_llm_fallback is None
     assert settings.stt_provider == "groq"
     assert settings.groq_stt_model == "whisper-large-v3-turbo"
     assert settings.vision_model == "google/gemma-4-26b-a4b-it:free"

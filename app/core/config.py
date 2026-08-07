@@ -58,11 +58,12 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.3
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 2
-    # Groq chat stack (free tier): primary engine + fast fallback. Used when
-    # llm_provider == "groq" and GROQ_API_KEY is set; OpenRouter becomes the
-    # backup gateway so the bot keeps answering even if Groq rate-limits.
+    # Groq chat stack (free tier): primary engine. No fallback on Groq — the
+    # 8B instant route is measurably bad at tool calling (it leaks tool calls
+    # as text), so when the primary rate-limits the gateway fails over to the
+    # OpenRouter free chain instead.
     groq_llm_model: str = "llama-3.3-70b-versatile"
-    groq_llm_fallback: str = "llama-3.1-8b-instant"
+    groq_llm_fallback: str | None = None
     # When true, the gateway periodically discovers new `:free` models from the
     # public OpenRouter catalogue and appends the compatible ones to the chain.
     llm_dynamic_free_models: bool = True

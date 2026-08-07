@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from app.domain.entities import OutboundMessage
 from app.infrastructure.db.uow import UnitOfWork
 from app.interfaces.telegram.processor import UpdateProcessor
+from app.interfaces.telegram.sanitize import sanitize_reply
 from tests.conftest import tg_text_update, tg_voice_update
 
 
@@ -188,11 +189,29 @@ async def test_composer_none_still_enqueues_fallback(session_factory):
 
 
 def test_leaked_tool_names_stripped_from_reply():
-    processor = make_processor(None)
-    assert processor._clean_reply("Let me check. (get_market_quote) Here is the price") == (
+    assert sanitize_reply("Let me check. (get_market_quote) Here is the price") == (
         "Let me check. Here is the price"
     )
-    assert processor._clean_reply("(get_market_news) He") == "He"
-    assert processor._clean_reply("Plain text (AAPL) stays (not a tool)") == (
+    assert sanitize_reply("(get_market_news) He") == "He"
+    assert sanitize_reply("Plain text (AAPL) stays (not a tool)") == (
         "Plain text (AAPL) stays (not a tool)"
     )
+
+
+@pytest.mark.asyncio
+async def test_leaky_composer_reply_is_sanitized_before_outbox(session_factory):
+    async def leaky_composer(ctx):
+        return "Nvidia is at (get_market_quote(symbol=\"NVDA\")) $218.99 today."
+
+    processor = UpdateProcessor(session_factory, leaky_composer, echo_mode=True)
+    payload = tg_text_update(update_id=99, chat_id=777, message_id=71, text="nvda?")
+
+    assert await processor.process_update(payload, source="webhook", correlation_id="c-9") is True
+
+    uow = UnitOfWork(session_factory)
+    async with uow:
+        result = await uow.session.execute(select(OutboundMessage))
+        outbound = result.scalars().all()
+        assert len(outbound) == 1
+        assert "get_market_quote" not in outbound[0].payload["text"]
+        assert outbound[0].payload["text"] == "Nvidia is at $218.99 today."

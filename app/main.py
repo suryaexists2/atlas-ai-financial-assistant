@@ -154,7 +154,9 @@ def _build_chat_gateway(settings: Settings):
             settings.groq_llm_model,
             timeout_seconds=settings.llm_timeout_seconds,
             max_retries=settings.llm_max_retries,
-            fallback_models=[settings.groq_llm_fallback],
+            fallback_models=(
+                [settings.groq_llm_fallback] if settings.groq_llm_fallback else None
+            ),
             skip_seconds=settings.llm_model_skip_seconds,
             rate_limit_skip_seconds=settings.llm_rate_limit_skip_seconds,
         )
