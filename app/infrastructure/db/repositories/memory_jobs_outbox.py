@@ -128,6 +128,7 @@ class SqlJobRepository(JobRepository):
         user_id: uuid.UUID | None = None,
         params: dict[str, Any] | None = None,
         timezone: str = "UTC",
+        next_run_at: dt.datetime | None = None,
     ) -> ScheduledJob:
         job = ScheduledJob(
             job_type=job_type,
@@ -135,6 +136,7 @@ class SqlJobRepository(JobRepository):
             user_id=user_id,
             params=params,
             timezone=timezone,
+            next_run_at=next_run_at,
         )
         self.session.add(job)
         await self.session.flush()

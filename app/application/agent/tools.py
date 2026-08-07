@@ -8,12 +8,18 @@ LLM or the transport layer.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-from app.application.scheduling.cron import cron_from_local_time, extract_clock_time
+from app.application.scheduling.cron import (
+    UTC,
+    compute_next_run,
+    cron_from_local_time,
+    extract_clock_time,
+)
 from app.domain.enums import AlertKind
 from app.domain.repositories import MemoryRepository, WatchlistRepository
 from app.infrastructure.db.uow import UnitOfWork
@@ -374,12 +380,15 @@ async def _create_reminder(ctx: ToolContext, args: dict[str, Any]) -> str:
     time = time or "09:00"
     user = await ctx.user.get_by_id(ctx.user_id)
     tz = user.timezone if user is not None else None
+    cron = cron_from_local_time(time, tz)
+    first_run = compute_next_run(cron, after=dt.datetime.now(UTC).astimezone(UTC))
     await ctx.jobs.create(
         job_type="reminder",
-        cron_expr=cron_from_local_time(time, tz),
+        cron_expr=cron,
         user_id=ctx.user_id,
         params={"text": text, "once": bool(args.get("once", False))},
         timezone=(tz or "UTC"),
+        next_run_at=first_run,
     )
     await ctx.uow.commit()
     return json.dumps({"message": f"reminder set for {time}: {text}"})

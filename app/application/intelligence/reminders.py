@@ -11,6 +11,10 @@ async def fire_reminder(uow: UnitOfWork, job, ctx: IntelligenceContext) -> None:
     if not text:
         return
     await enqueue_for_user(uow, job, f"⏰ Reminder: {text}", priority=9)
+    if (job.params or {}).get("once"):
+        # One-off reminder: retire the job so it never fires again.
+        # The worker's sweep commits this at the end of the cycle.
+        job.enabled = False
 
 
 __all__ = ["fire_reminder"]
