@@ -58,11 +58,13 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.3
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 2
-    # Groq chat stack (free tier): primary engine. No fallback on Groq — the
-    # 8B instant route is measurably bad at tool calling (it leaks tool calls
-    # as text), so when the primary rate-limits the gateway fails over to the
-    # OpenRouter free chain instead.
-    groq_llm_model: str = "llama-3.3-70b-versatile"
+    # Groq chat stack (free tier): primary engine. `openai/gpt-oss-120b` is
+    # Groq's current 120B open-weights route with reliable tool calling
+    # (verified: emits get_market_quote correctly); the legacy llama-3.3-70b-
+    # versatile route was hitting its per-day token cap. No fallback on Groq —
+    # when the primary rate-limits the gateway fails over to the OpenRouter
+    # free chain instead.
+    groq_llm_model: str = "openai/gpt-oss-120b"
     groq_llm_fallback: str | None = None
     # When true, the gateway periodically discovers new `:free` models from the
     # public OpenRouter catalogue and appends the compatible ones to the chain.
