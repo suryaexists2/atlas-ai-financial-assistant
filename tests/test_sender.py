@@ -91,6 +91,20 @@ async def test_unsupported_payload_type_returns_false():
 
 
 @pytest.mark.asyncio
+async def test_status_payload_is_sent_as_plain_text():
+    api = AsyncMock()
+    api.send_message.return_value = {"message_id": 9}
+    sender = TelegramSender(api, make_limiter())
+
+    result = await sender.send(
+        chat_id=111, payload={"type": "status", "text": "⏳ thinking..."}, capture_message_id=True
+    )
+
+    assert result == 9
+    api.send_message.assert_awaited_once_with(chat_id=111, text="⏳ thinking...")
+
+
+@pytest.mark.asyncio
 async def test_backoff_caps_at_max_delay():
     sender = TelegramSender(AsyncMock(), make_limiter(), max_delay_seconds=10)
     delay = sender._backoff(attempt=10, retry_after=None)

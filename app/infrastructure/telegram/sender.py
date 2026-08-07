@@ -52,7 +52,8 @@ class TelegramSender:
         """
         message_type = payload.get("type", "text")
         text = payload.get("text")
-        if message_type != "text" or text is None:
+        if message_type not in ("text", "status") or text is None:
+            # "status" rows carry plain text too (the thinking bubble)
             logger.error("unsupported_outbound_payload", type=message_type)
             return False
 
