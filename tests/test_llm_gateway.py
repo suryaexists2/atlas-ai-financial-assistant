@@ -1,15 +1,20 @@
 """OpenRouter gateway tests: payload shape, tool-call parsing, retries, errors."""
 
 import json
+import time
 
 import httpx
 import pytest
 
+from app.application.agent.ports import LLMResponse
 from app.infrastructure.llm.gateway import (
+    FailoverGateway,
+    GroqGateway,
     LLMGatewayError,
     LLMGatewayTransientError,
     OpenRouterGateway,
 )
+from app.infrastructure.llm.models_registry import FreeModel, FreeModelRegistry
 
 
 def _client_with(handler) -> OpenRouterGateway:
@@ -145,10 +150,18 @@ async def test_http_error_maps_to_gateway_error():
         await gateway.complete([{"role": "user", "content": "hi"}])
 
 
-def _gateway_with(handler, *, model="model-x", fallbacks=None, max_retries=1):
+def _gateway_with(
+    handler, *, model="model-x", fallbacks=None, max_retries=1, registry=None, skip_seconds=600
+):
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return OpenRouterGateway(
-        "test-key", model, max_retries=max_retries, fallback_models=fallbacks, http=http
+        "test-key",
+        model,
+        max_retries=max_retries,
+        fallback_models=fallbacks,
+        http=http,
+        registry=registry,
+        skip_seconds=skip_seconds,
     )
 
 
@@ -274,3 +287,207 @@ async def test_all_models_empty_raises():
     with pytest.raises(LLMGatewayError) as exc_info:
         await gateway.complete([{"role": "user", "content": "hi"}])
     assert "empty content for every model" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_402_failover_to_free_backup_and_skipped_next_turn():
+    requested_models: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requested_models.append(body["model"])
+        if body["model"] in ("model-x", "paid-a"):
+            return httpx.Response(402, text="insufficient credits; can only afford 385 tokens")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "free reply"}}],
+                "model": body["model"],
+            },
+        )
+
+    gateway = _gateway_with(handler, fallbacks=["paid-a", "free-a"])
+    first = await gateway.complete([{"role": "user", "content": "hi"}])
+    assert first.content == "free reply"
+    assert requested_models == ["model-x", "paid-a", "free-a"]
+
+    second = await gateway.complete([{"role": "user", "content": "hi"}])
+    assert second.content == "free reply"
+    assert requested_models == ["model-x", "paid-a", "free-a", "free-a"]
+
+
+@pytest.mark.asyncio
+async def test_skipped_model_not_requested_again_even_if_healthy():
+    requested_models: list[str] = []
+    state = {"down": True}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requested_models.append(body["model"])
+        if state["down"] and body["model"] == "model-x":
+            return httpx.Response(404, text="model not found")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "model": body["model"],
+            },
+        )
+
+    gateway = _gateway_with(handler, fallbacks=["fallback-a"])
+    await gateway.complete([{"role": "user", "content": "hi"}])
+    assert requested_models == ["model-x", "fallback-a"]
+
+    state["down"] = False
+    await gateway.complete([{"role": "user", "content": "hi"}])
+    assert requested_models == ["model-x", "fallback-a", "fallback-a"]
+
+
+@pytest.mark.asyncio
+async def test_all_models_skipped_raises_clean_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="nope")
+
+    gateway = _gateway_with(handler, fallbacks=["fallback-a"])
+    with pytest.raises(LLMGatewayError):
+        await gateway.complete([{"role": "user", "content": "hi"}])
+    with pytest.raises(LLMGatewayError) as exc_info:
+        await gateway.complete([{"role": "user", "content": "hi"}])
+    assert "temporarily skipped" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_registry_extras_appended_and_reasoning_disabled():
+    requested_bodies: list[dict] = []
+    registry = FreeModelRegistry()
+    registry._last_refresh = time.monotonic()
+    registry._extras = [
+        FreeModel(id="registry-free:free", context_length=100000, reasoning_disablable=True)
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requested_bodies.append(body)
+        if body["model"] in ("model-x", "cfg-free:free"):
+            return httpx.Response(404, text="gone")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "done"}}],
+                "model": body["model"],
+            },
+        )
+
+    gateway = _gateway_with(handler, fallbacks=["cfg-free:free"], registry=registry)
+    response = await gateway.complete([{"role": "user", "content": "hi"}])
+    assert response.content == "done"
+    expected = ["model-x", "cfg-free:free", "registry-free:free"]
+    assert [b["model"] for b in requested_bodies] == expected
+    assert requested_bodies[-1]["reasoning"] == {"enabled": False}
+
+
+@pytest.mark.asyncio
+async def test_skip_expiry_allows_model_to_be_tried_again():
+    requested_models: list[str] = []
+    state = {"down": True}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requested_models.append(body["model"])
+        if state["down"] and body["model"] == "model-x":
+            return httpx.Response(402, text="no credits")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "model": body["model"],
+            },
+        )
+
+    gateway = _gateway_with(handler, fallbacks=["fallback-a"], skip_seconds=0)
+    first = await gateway.complete([{"role": "user", "content": "hi"}])
+    assert first.content == "ok"
+    assert requested_models == ["model-x", "fallback-a"]
+    state["down"] = False
+    second = await gateway.complete([{"role": "user", "content": "hi"}])
+    assert second.content == "ok"
+    assert requested_models == ["model-x", "fallback-a", "model-x"]
+
+
+class _FakeGateway:
+    """Stub LLMGateway for FailoverGateway tests."""
+
+    def __init__(self, *, content="ok", error=None, used=None):
+        self._content = content
+        self._error = error
+        self._used = used or []
+        self.calls = 0
+
+    async def complete(self, messages, *, tools=None, max_tokens=600, temperature=0.3):
+        self.calls += 1
+        if self._error is not None:
+            raise self._error
+        return LLMResponse(content=self._content, model="fake")
+
+
+@pytest.mark.asyncio
+async def test_groq_gateway_uses_groq_endpoint():
+    requested = {"url": None, "model": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested["url"] = str(request.url)
+        body = json.loads(request.content)
+        requested["model"] = body["model"]
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "groq reply"}}],
+                "model": body["model"],
+            },
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    gateway = GroqGateway(
+        "groq-key",
+        "llama-3.3-70b-versatile",
+        fallback_models=["llama-3.1-8b-instant"],
+        http=http,
+    )
+    response = await gateway.complete([{"role": "user", "content": "hi"}])
+    assert response.content == "groq reply"
+    assert requested["url"].startswith("https://api.groq.com/openai/v1/chat/completions")
+    assert requested["model"] == "llama-3.3-70b-versatile"
+
+
+@pytest.mark.asyncio
+async def test_failover_uses_backup_when_primary_fails():
+    primary = _FakeGateway(error=LLMGatewayError("primary exploded"))
+    backup = _FakeGateway(content="from backup")
+    gateway = FailoverGateway(primary, backup)
+    response = await gateway.complete([{"role": "user", "content": "hi"}])
+    assert response.content == "from backup"
+    assert primary.calls == 1
+    assert backup.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_failover_does_not_touch_backup_on_success():
+    primary = _FakeGateway(content="primary ok")
+    backup = _FakeGateway(content="from backup")
+    gateway = FailoverGateway(primary, backup)
+    response = await gateway.complete([{"role": "user", "content": "hi"}])
+    assert response.content == "primary ok"
+    assert primary.calls == 1
+    assert backup.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_failover_raises_when_both_fail():
+    primary = _FakeGateway(error=LLMGatewayError("primary exploded"))
+    backup = _FakeGateway(error=LLMGatewayError("backup exploded"))
+    gateway = FailoverGateway(primary, backup)
+    with pytest.raises(LLMGatewayError) as exc_info:
+        await gateway.complete([{"role": "user", "content": "hi"}])
+    assert "backup exploded" in str(exc_info.value)
+    assert primary.calls == 1
+    assert backup.calls == 1

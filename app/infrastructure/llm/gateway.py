@@ -11,16 +11,19 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import time
 from typing import Any
 
 import httpx
 
 from app.application.agent.ports import LLMGateway, LLMResponse, LLMToolCall
 from app.core.logging import get_logger
+from app.infrastructure.llm.models_registry import FreeModelRegistry
 
 logger = get_logger(__name__)
 
 _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+_GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
 class LLMGatewayError(RuntimeError):
@@ -46,6 +49,8 @@ class OpenRouterGateway(LLMGateway):
         max_retries: int = 2,
         fallback_models: list[str] | None = None,
         http: httpx.AsyncClient | None = None,
+        skip_seconds: int = 600,
+        registry: FreeModelRegistry | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url
@@ -56,6 +61,32 @@ class OpenRouterGateway(LLMGateway):
         for extra in fallback_models or []:
             if extra and extra != model and extra not in self._models:
                 self._models.append(extra)
+        self._skip_seconds = skip_seconds
+        self._registry = registry
+        # model -> expiry timestamp (monotonic); skipped models are not tried.
+        self._skip_until: dict[str, float] = {}
+        # registry-managed models that accept `reasoning: {"enabled": false}`.
+        self._reasoning_off: dict[str, dict[str, Any]] = {}
+
+    async def _sync_registry(self) -> None:
+        if self._registry is None:
+            return
+        try:
+            await self._registry.ensure_fresh()
+        except Exception:  # noqa: BLE001 - the chain must work without the catalogue
+            logger.warning("llm_registry_lookup_failed", exc_info=True)
+        for extra in self._registry.extra_models():
+            if extra.id not in self._models:
+                self._models.append(extra.id)
+            if extra.reasoning_disablable:
+                self._reasoning_off[extra.id] = {"enabled": False}
+
+    def _skip(self, model: str) -> None:
+        self._skip_until[model] = time.monotonic() + self._skip_seconds
+
+    def _chain(self) -> list[str]:
+        now = time.monotonic()
+        return [m for m in self._models if now >= self._skip_until.get(m, 0.0)]
 
     async def complete(
         self,
@@ -65,6 +96,12 @@ class OpenRouterGateway(LLMGateway):
         max_tokens: int = 600,
         temperature: float = 0.3,
     ) -> LLMResponse:
+        await self._sync_registry()
+        chain = self._chain()
+        if not chain:
+            raise LLMGatewayError(
+                "All LLM models are temporarily skipped after recent failures; try again shortly"
+            )
         base_body: dict[str, Any] = {
             "messages": messages,
             "max_tokens": max_tokens,
@@ -78,9 +115,11 @@ class OpenRouterGateway(LLMGateway):
         last_empty: LLMResponse | None = None
         self._model_errors: dict[str, str] = {}
         started = asyncio.get_running_loop().time()
-        for model in self._models:
+        for model in chain:
             body = dict(base_body)
             body["model"] = model
+            if model in self._reasoning_off:
+                body["reasoning"] = self._reasoning_off[model]
             attempt = 0
             while True:
                 attempt += 1
@@ -106,6 +145,7 @@ class OpenRouterGateway(LLMGateway):
                         # evidence for the caller and try the next model.
                         logger.warning("llm_empty_response", **outcome)
                         last_empty = response
+                        self._skip(model)
                         break
                     logger.info("llm_response_received", **outcome, usage=usage)
                     return response
@@ -117,6 +157,8 @@ class OpenRouterGateway(LLMGateway):
                         continue
                     if exc.status_code in (401, 403):
                         raise
+                    if exc.status_code is not None:
+                        self._skip(model)
                     break
             logger.warning(
                 "llm_fallback_model",
@@ -128,10 +170,10 @@ class OpenRouterGateway(LLMGateway):
                 "LLM returned empty content for every model (no text, no tool calls); "
                 f"last finish_reason={last_empty.finish_reason} model={last_empty.model}"
             )
-        if len(self._models) == 1:
+        if len(chain) == 1:
             raise last_error or LLMGatewayError("LLM provider request failed")
         raise LLMGatewayError(
-            f"All {len(self._models)} LLM model(s) failed; "
+            f"All {len(chain)} LLM model(s) failed; "
             + "; ".join(f"{m}={err}" for m, err in self._model_errors.items())[:700]
         ) from last_error
 
@@ -217,4 +259,79 @@ class OpenRouterGateway(LLMGateway):
         return (2 ** (attempt - 1)) + random.uniform(0, 0.5)
 
 
-__all__ = ["LLMGatewayError", "LLMGatewayTransientError", "OpenRouterGateway"]
+class GroqGateway(OpenRouterGateway):
+    """Free chat completions via Groq's OpenAI-compatible API.
+
+    Same protocol and failover logic as the OpenRouter gateway, but pointed at
+    Groq's free tier (LLaMA 3.3 70B versatile / 3.1 8B instant). No free-model
+    registry — the Groq catalogue is stable.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        *,
+        timeout_seconds: float = 60.0,
+        max_retries: int = 2,
+        fallback_models: list[str] | None = None,
+        http: httpx.AsyncClient | None = None,
+        skip_seconds: int = 600,
+    ) -> None:
+        super().__init__(
+            api_key,
+            model,
+            base_url=_GROQ_URL,
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+            fallback_models=fallback_models,
+            http=http,
+            skip_seconds=skip_seconds,
+            registry=None,
+        )
+
+
+class FailoverGateway(LLMGateway):
+    """Tries the primary gateway, then transparently falls back to the backup.
+
+    Keeps the agent alive when one provider rate-limits or runs out of credits
+    (e.g. Groq free tier -> OpenRouter free chain). Only `LLMGatewayError`
+    failures trigger the switch; success on either side is returned as-is.
+    """
+
+    def __init__(self, primary: LLMGateway, backup: LLMGateway) -> None:
+        self._primary = primary
+        self._backup = backup
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 600,
+        temperature: float = 0.3,
+    ) -> LLMResponse:
+        try:
+            return await self._primary.complete(
+                messages,
+                tools=tools,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except LLMGatewayError as primary_error:
+            logger.warning("llm_provider_failover", error=str(primary_error)[:200])
+            return await self._backup.complete(
+                messages,
+                tools=tools,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+
+
+__all__ = [
+    "LLMGatewayError",
+    "LLMGatewayTransientError",
+    "OpenRouterGateway",
+    "GroqGateway",
+    "FailoverGateway",
+]

@@ -9,7 +9,6 @@ from app.core.config import Settings, get_settings
 from app.core.exceptions import AppError
 from app.core.logging import configure_logging, get_logger
 from app.infrastructure.db.session import build_engine, build_session_factory, dispose_engine
-from app.infrastructure.llm.gateway import OpenRouterGateway
 from app.infrastructure.providers.finnhub import FinnhubClient
 from app.infrastructure.providers.sec import SecEdgarClient
 from app.infrastructure.telegram.api import AiogramTelegramApi
@@ -126,23 +125,69 @@ def _build_google_oauth(settings: Settings):
     )
 
 
+def _llm_registry(settings: Settings):
+    """Shared free-model discovery registry (one catalogue fetch per period)."""
+    from app.infrastructure.llm.models_registry import get_registry
+
+    if not settings.llm_dynamic_free_models:
+        return None
+    return get_registry(settings)
+
+
+def _build_chat_gateway(settings: Settings):
+    """Builds the chat gateway for the chosen provider stack.
+
+    `llm_provider == "groq"` (with a key) makes Groq the primary engine and
+    OpenRouter the backup so the bot never stops; otherwise OpenRouter with its
+    free-model chain is used directly. Returns None when no LLM key exists.
+    """
+    from app.infrastructure.llm.gateway import (
+        FailoverGateway,
+        GroqGateway,
+        OpenRouterGateway,
+    )
+
+    groq_gateway = None
+    if settings.groq_api_key:
+        groq_gateway = GroqGateway(
+            settings.groq_api_key,
+            settings.groq_llm_model,
+            timeout_seconds=settings.llm_timeout_seconds,
+            max_retries=settings.llm_max_retries,
+            fallback_models=[settings.groq_llm_fallback],
+            skip_seconds=settings.llm_model_skip_seconds,
+        )
+
+    openrouter_gateway = None
+    if settings.openrouter_api_key:
+        openrouter_gateway = OpenRouterGateway(
+            settings.openrouter_api_key,
+            settings.llm_model,
+            timeout_seconds=settings.llm_timeout_seconds,
+            max_retries=settings.llm_max_retries,
+            fallback_models=settings.llm_fallback_models,
+            skip_seconds=settings.llm_model_skip_seconds,
+            registry=_llm_registry(settings),
+        )
+
+    if settings.llm_provider == "groq":
+        if groq_gateway is not None and openrouter_gateway is not None:
+            return FailoverGateway(groq_gateway, openrouter_gateway)
+        return groq_gateway or openrouter_gateway
+    return openrouter_gateway
+
+
 def _build_agent_composer(settings: Settings, media_pipeline=None) -> AgentComposer | None:
     """Builds the agent composer when an LLM key is configured; else None."""
     from app.application.agent.core import AgentCore
     from app.application.agent.tools import default_registry
     from app.application.onboarding import OnboardingEngine
 
-    if not settings.openrouter_api_key:
+    if not settings.openrouter_api_key and not settings.groq_api_key:
         logger.warning("agent_disabled_no_llm_key")
         return None
 
-    gateway = OpenRouterGateway(
-        settings.openrouter_api_key,
-        settings.llm_model,
-        timeout_seconds=settings.llm_timeout_seconds,
-        max_retries=settings.llm_max_retries,
-        fallback_models=settings.llm_fallback_models,
-    )
+    gateway = _build_chat_gateway(settings)
     finnhub = FinnhubClient(settings.finnhub_api_key) if settings.finnhub_api_key else None
     sec = SecEdgarClient(settings.sec_user_agent)
     from app.infrastructure.providers.google_sheets import GoogleSheetsClient
@@ -195,17 +240,7 @@ def _build_scheduler(settings: Settings, session_factory):
 
     finnhub = FinnhubClient(settings.finnhub_api_key) if settings.finnhub_api_key else None
     sec = SecEdgarClient(settings.sec_user_agent) if settings.sec_user_agent else None
-    gateway = (
-        OpenRouterGateway(
-            settings.openrouter_api_key,
-            settings.llm_model,
-            timeout_seconds=settings.llm_timeout_seconds,
-            max_retries=settings.llm_max_retries,
-            fallback_models=settings.llm_fallback_models,
-        )
-        if settings.openrouter_api_key
-        else None
-    )
+    gateway = _build_chat_gateway(settings)
     ctx = IntelligenceContext(finnhub=finnhub, sec=sec, gateway=gateway)
     runner = JobRunner(
         {

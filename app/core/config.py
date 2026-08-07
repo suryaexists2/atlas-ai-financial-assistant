@@ -37,20 +37,40 @@ class Settings(BaseSettings):
     telegram_webhook_secret: str | None = Field(default=None, repr=False)
     public_base_url: str | None = None
 
-    llm_provider: Literal["openrouter", "openai", "anthropic"] = "openrouter"
+    llm_provider: Literal["openrouter", "groq", "openai", "anthropic"] = "groq"
     llm_model: str = "meta-llama/llama-3.3-70b-instruct"
     # Models tried in order when the primary model/route fails (per turn).
+    # Paid first for quality while credits exist; the `:free` routes cost $0 so
+    # the bot keeps answering even when the account balance is exhausted.
     llm_fallback_models: list[str] = Field(
         default_factory=lambda: [
             "openai/gpt-4o-mini",
-            "google/gemini-2.5-flash",
-            "meta-llama/llama-3.1-8b-instruct",
+            "google/gemma-4-31b-it:free",
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "google/gemma-4-26b-a4b-it:free",
+            "nvidia/nemotron-nano-9b-v2:free",
         ]
     )
-    llm_max_tokens: int = 350
+    llm_max_tokens: int = 600
     llm_temperature: float = 0.3
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 2
+    # Groq chat stack (free tier): primary engine + fast fallback. Used when
+    # llm_provider == "groq" and GROQ_API_KEY is set; OpenRouter becomes the
+    # backup gateway so the bot keeps answering even if Groq rate-limits.
+    groq_llm_model: str = "llama-3.3-70b-versatile"
+    groq_llm_fallback: str = "llama-3.1-8b-instant"
+    # When true, the gateway periodically discovers new `:free` models from the
+    # public OpenRouter catalogue and appends the compatible ones to the chain.
+    llm_dynamic_free_models: bool = True
+    # Compatibility floor for dynamically discovered models (see models_registry).
+    llm_free_min_context: int = 32_000
+    llm_free_min_completion: int = 600
+    # How long a model that fails (402/400/404/429/empty) is skipped across turns.
+    llm_model_skip_seconds: int = 600
+    # How often the free-model catalogue is re-fetched.
+    llm_models_refresh_seconds: int = 21_600
     openrouter_api_key: str | None = Field(default=None, repr=False)
     openai_api_key: str | None = Field(default=None, repr=False)
     anthropic_api_key: str | None = Field(default=None, repr=False)
@@ -65,10 +85,10 @@ class Settings(BaseSettings):
     ingestion_chunk_chars: int = 12_000  # chunk size for very large documents
     ingestion_excerpt_chars: int = 8_000  # excerpt shown to the model per media message
     stt_model: str = "openai/whisper-1"
-    vision_model: str = "openai/gpt-4o-mini"
-    # STT backend: "openrouter" (Whisper via OpenRouter, needs ~$0.50 credit) or
-    # "groq" (free Groq Whisper, needs a free GROQ_API_KEY from console.groq.com).
-    stt_provider: Literal["openrouter", "groq"] = "openrouter"
+    vision_model: str = "google/gemma-4-26b-a4b-it:free"
+    # STT backend: "groq" (free Groq Whisper, needs a free GROQ_API_KEY from
+    # console.groq.com) or "openrouter" (Whisper via OpenRouter, needs credit).
+    stt_provider: Literal["openrouter", "groq"] = "groq"
     groq_api_key: str | None = Field(default=None, repr=False)
     groq_stt_model: str = "whisper-large-v3-turbo"
     stt_timeout_seconds: float = 90.0
