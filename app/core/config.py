@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     llm_fallback_models: list[str] = Field(
         default_factory=lambda: [
             "openai/gpt-4o-mini",
-            "google/gemini-2.0-flash",
+            "google/gemini-2.5-flash",
             "meta-llama/llama-3.1-8b-instruct",
         ]
     )
