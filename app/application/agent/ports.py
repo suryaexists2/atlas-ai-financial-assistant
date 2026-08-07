@@ -24,6 +24,8 @@ class LLMResponse:
     model: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)
     finish_reason: str | None = None
+    # Raw assistant-message keys (truncated) for diagnostics; never sent to the user.
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 class LLMGateway(Protocol):

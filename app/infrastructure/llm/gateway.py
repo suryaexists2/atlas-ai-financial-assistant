@@ -75,6 +75,7 @@ class OpenRouterGateway(LLMGateway):
             base_body["tool_choice"] = "auto"
 
         last_error: LLMGatewayError | None = None
+        last_empty: LLMResponse | None = None
         started = asyncio.get_running_loop().time()
         for model in self._models:
             body = dict(base_body)
@@ -92,15 +93,20 @@ class OpenRouterGateway(LLMGateway):
                 try:
                     message, model_used, usage, finish_reason = await self._post(body)
                     response = self._parse_response(message, model_used, usage, finish_reason)
-                    logger.info(
-                        "llm_response_received",
-                        model=model_used,
-                        ms=round((asyncio.get_running_loop().time() - started) * 1000),
-                        finish_reason=response.finish_reason,
-                        n_tool_calls=len(response.tool_calls),
-                        content_chars=len(response.content or ""),
-                        usage=usage,
-                    )
+                    outcome = {
+                        "model": model_used,
+                        "ms": round((asyncio.get_running_loop().time() - started) * 1000),
+                        "finish_reason": finish_reason,
+                        "n_tool_calls": len(response.tool_calls),
+                        "content_chars": len(response.content or ""),
+                    }
+                    if not (response.content or "").strip() and not response.tool_calls:
+                        # Success code, but nothing usable — keep the only failure
+                        # evidence for the caller and try the next model.
+                        logger.warning("llm_empty_response", **outcome)
+                        last_empty = response
+                        break
+                    logger.info("llm_response_received", **outcome, usage=usage)
                     return response
                 except LLMGatewayError as exc:
                     last_error = exc
@@ -113,7 +119,12 @@ class OpenRouterGateway(LLMGateway):
             logger.warning(
                 "llm_fallback_model",
                 model=model,
-                error=str(last_error)[:200],
+                error=str(last_error or last_empty)[:200],
+            )
+        if last_empty is not None:
+            raise LLMGatewayError(
+                "LLM returned empty content for every model (no text, no tool calls); "
+                f"last finish_reason={last_empty.finish_reason} model={last_empty.model}"
             )
         if len(self._models) == 1:
             raise last_error or LLMGatewayError("LLM provider request failed")
@@ -185,12 +196,18 @@ class OpenRouterGateway(LLMGateway):
                 )
             )
         content = message.get("content")
+        raw = {
+            key: repr(message.get(key))[:200]
+            for key in ("content", "tool_calls", "refusal", "reasoning", "reasoning_content")
+            if message.get(key) is not None
+        }
         return LLMResponse(
             content=content,
             tool_calls=tool_calls,
             model=model,
             usage=usage,
             finish_reason=finish_reason,
+            raw=raw,
         )
 
     def _backoff(self, attempt: int) -> float:

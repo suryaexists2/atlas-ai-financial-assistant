@@ -222,3 +222,55 @@ async def test_transient_error_rotates_after_retries_exhausted():
     response = await gateway.complete([{"role": "user", "content": "hi"}])
     assert response.content == "recovered"
     assert requested_models == ["model-x", "model-x", "model-x", "fallback-a"]
+
+
+@pytest.mark.asyncio
+async def test_empty_response_rotates_to_next_model():
+    requested_models: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requested_models.append(body["model"])
+        if body["model"] == "model-x":
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "real answer"},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        )
+
+    gateway = _gateway_with(handler, fallbacks=["fallback-a"])
+    response = await gateway.complete([{"role": "user", "content": "hi"}])
+    assert response.content == "real answer"
+    assert requested_models == ["model-x", "fallback-a"]
+
+
+@pytest.mark.asyncio
+async def test_all_models_empty_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "   "}, "finish_reason": "stop"}
+                ]
+            },
+        )
+
+    gateway = _gateway_with(handler, fallbacks=["fallback-a", "fallback-b"])
+    with pytest.raises(LLMGatewayError) as exc_info:
+        await gateway.complete([{"role": "user", "content": "hi"}])
+    assert "empty content for every model" in str(exc_info.value)

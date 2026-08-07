@@ -96,8 +96,18 @@ class AgentCore:
                     text = (response.content or "").strip()
                     if text:
                         return text
-                    logger.warning("agent_empty_reply_falling_back")
-                    return self._degrade("empty_reply content  neither text nor tool_calls")
+                    logger.warning(
+                        "agent_empty_reply_falling_back",
+                        finish_reason=response.finish_reason,
+                        content=response.content,
+                        n_tool_calls=len(response.tool_calls),
+                    )
+                    return self._degrade(
+                        f"empty_reply finish={response.finish_reason} "
+                        f"model={response.model} "
+                        f"content={repr((response.content or '')[:80])} "
+                        f"tool_calls={len(response.tool_calls)} raw={response.raw}"
+                    )
 
                 # Assistant message carrying the tool calls, then results.
                 assistant_msg: dict[str, Any] = {
