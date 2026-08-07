@@ -113,8 +113,10 @@ def _build_agent_composer(settings: Settings) -> AgentComposer | None:
     finnhub = FinnhubClient(settings.finnhub_api_key) if settings.finnhub_api_key else None
     sec = SecEdgarClient(settings.sec_user_agent)
     from app.infrastructure.providers.google_sheets import GoogleSheetsClient
+    from app.infrastructure.providers.stooq import MarketIndicesClient
 
     google_sheets: GoogleSheetsClient | None = GoogleSheetsClient()
+    indices: MarketIndicesClient | None = MarketIndicesClient()
     agent = AgentCore(
         gateway,
         default_registry(),
@@ -124,7 +126,9 @@ def _build_agent_composer(settings: Settings) -> AgentComposer | None:
         fallback_reply=settings.agent_fallback_reply,
         max_context_messages=settings.agent_context_max_messages,
     )
-    return AgentComposer(agent, finnhub=finnhub, sec=sec, google_sheets=google_sheets)
+    return AgentComposer(
+        agent, finnhub=finnhub, sec=sec, google_sheets=google_sheets, indices=indices
+    )
 
 
 def _build_scheduler(settings: Settings, session_factory):

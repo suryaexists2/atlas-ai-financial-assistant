@@ -28,6 +28,7 @@ class ToolContext:
     finnhub: FinnhubClient | None = None
     sec: SecEdgarClient | None = None
     google_sheets: Any = None
+    indices: Any = None
 
     @property
     def watchlist(self) -> WatchlistRepository:
@@ -260,6 +261,18 @@ async def _get_company_earnings(ctx: ToolContext, args: dict[str, Any]) -> str:
     if not item:
         return json.dumps({"error": f"no earnings data for {symbol}", "symbol": symbol})
     return json.dumps({"symbol": symbol, "earnings": item})
+
+
+async def _get_market_indices(ctx: ToolContext, args: dict[str, Any]) -> str:
+    if ctx.indices is None:
+        return json.dumps({"error": "index data is not configured"})
+    try:
+        indices = await ctx.indices.fetch()
+    except Exception as exc:  # noqa: BLE001 - surface provider errors to the model
+        return json.dumps({"error": str(exc)})
+    if not indices:
+        return json.dumps({"error": "no index data available right now"})
+    return json.dumps({"indices": indices, "count": len(indices)})
 
 
 async def _create_price_alert(ctx: ToolContext, args: dict[str, Any]) -> str:
@@ -544,6 +557,15 @@ DEFAULT_TOOLS: list[Tool] = [
         description="Get the latest general market news headlines with sources.",
         parameters={"limit": {"type": "integer", "description": "Max headlines (default 8)"}},
         handler=_get_market_news,
+    ),
+    Tool(
+        name="get_market_indices",
+        description=(
+            "Get current levels of the major US indices (S&P 500, Dow Jones, "
+            "Nasdaq) with change and change percent."
+        ),
+        parameters={},
+        handler=_get_market_indices,
     ),
     Tool(
         name="get_company_news",

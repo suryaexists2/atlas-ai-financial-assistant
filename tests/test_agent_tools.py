@@ -277,6 +277,35 @@ async def test_get_document_contents_returns_extracted_text(uow, demo_user):
 
 
 @pytest.mark.asyncio
+async def test_market_indices_tool(uow, demo_user):
+    import httpx
+
+    from app.infrastructure.providers.stooq import MarketIndicesClient
+
+    CSV = (
+        "Symbol,Date,Time,Open,High,Low,Close,Volume,Change,% Change\n"
+        "^spx,2026-08-07,,,,,5900.00,,,+0.40\n"
+        "^dji,2026-08-07,,,,,41000.00,,,-0.10\n"
+        "^ndq,2026-08-07,,,,,19900.00,,,+1.20\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=CSV)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    indices = MarketIndicesClient(http=http)
+    registry = default_registry()
+
+    async with uow:
+        ctx = ToolContext(uow=uow, user_id=demo_user["user_id"], indices=indices)
+        out = json.loads(await registry.execute(ctx, "get_market_indices", {}))
+        assert out["count"] == 3
+        codes = {i["code"] for i in out["indices"]}
+        assert codes == {"SPX", "DJI", "NDQ"}
+        assert out["indices"][0]["price"] == 5900.0
+
+
+@pytest.mark.asyncio
 async def test_link_and_read_google_sheet(uow, demo_user):
     import httpx
 

@@ -41,12 +41,14 @@ class AgentComposer:
         finnhub: FinnhubClient | None = None,
         sec: SecEdgarClient | None = None,
         google_sheets: Any = None,
+        indices: Any = None,
         onboarding: OnboardingEngine | None = None,
     ) -> None:
         self._agent = agent
         self._finnhub = finnhub
         self._sec = sec
         self._google_sheets = google_sheets
+        self._indices = indices
         self._onboarding = onboarding or OnboardingEngine()
 
     async def __call__(self, ctx: ReplyContext) -> str | None:
@@ -69,6 +71,7 @@ class AgentComposer:
             finnhub=self._finnhub,
             sec=self._sec,
             google_sheets=self._google_sheets,
+            indices=self._indices,
         )
         return await self._agent.run(
             ctx.uow,
