@@ -172,8 +172,21 @@ def _build_chat_gateway(settings: Settings):
 
     if settings.llm_provider == "groq":
         if groq_gateway is not None and openrouter_gateway is not None:
+            logger.info(
+                "llm_gateway_built",
+                provider="groq",
+                primary=settings.groq_llm_model,
+                openrouter_backup=settings.llm_model,
+            )
             return FailoverGateway(groq_gateway, openrouter_gateway)
+        logger.warning(
+            "llm_gateway_built_partial",
+            provider="groq",
+            groq_available=groq_gateway is not None,
+            openrouter_available=openrouter_gateway is not None,
+        )
         return groq_gateway or openrouter_gateway
+    logger.info("llm_gateway_built", provider="openrouter", primary=settings.llm_model)
     return openrouter_gateway
 
 
