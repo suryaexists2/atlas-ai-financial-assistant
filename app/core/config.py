@@ -150,6 +150,11 @@ class Settings(BaseSettings):
     # Dev convenience: reply to every incoming message with a canned echo.
     echo_mode: bool = True
 
+    # Onboarding: brand-new users are told the assistant is running on free
+    # APIs in testing mode, so delays / rate limits are possible. Flip off
+    # once the app leaves free-tier testing.
+    onboarding_testing_notice: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

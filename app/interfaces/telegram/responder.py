@@ -125,6 +125,11 @@ class AgentComposer:
             conversation_id=ctx.conversation_id,
             tool_context=tool_ctx,
         )
+        if onboarding_reply.notice and reply:
+            # First-time user who skipped onboarding (question-first, media-
+            # first, or 'skip'): prepend the one-time testing-mode heads-up to
+            # the agent's first reply so they still get the disclaimer.
+            reply = f"{onboarding_reply.notice}\n\n{reply}"
         if tool_ctx.oauth_connect_url:
             # Contextual, single-purpose OAuth button — the only inline button
             # the bot ever emits; everything else stays plain text.

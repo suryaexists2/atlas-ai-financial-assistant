@@ -264,7 +264,7 @@ def test_config_defaults_resilient_chain():
 def test_config_defaults_groq_stack():
     settings = Settings(_env_file=None)
     assert settings.llm_provider == "groq"
-    assert settings.groq_llm_model == "llama-3.3-70b-versatile"
+    assert settings.groq_llm_model == "openai/gpt-oss-120b"
     assert settings.groq_llm_fallback is None
     assert settings.stt_provider == "groq"
     assert settings.groq_stt_model == "whisper-large-v3-turbo"

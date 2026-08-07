@@ -230,7 +230,10 @@ def _build_agent_composer(settings: Settings, media_pipeline=None) -> AgentCompo
         max_context_messages=settings.agent_context_max_messages,
         debug_reply_errors=settings.agent_debug_reply_errors,
     )
-    onboarding = OnboardingEngine(google_connect_available=google_oauth is not None)
+    onboarding = OnboardingEngine(
+        google_connect_available=google_oauth is not None,
+        testing_notice=settings.onboarding_testing_notice,
+    )
     return AgentComposer(
         agent,
         finnhub=finnhub,

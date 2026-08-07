@@ -143,6 +143,57 @@ async def test_completed_profile_stays_completed(uow):
         assert reply.text is None
 
 
+async def test_welcome_greets_with_name_and_testing_notice(uow):
+    async with uow:
+        user_id = await make_user(uow)
+        engine = OnboardingEngine()
+        turn = await engine.turn(uow, user_id=user_id, text="Hi")
+        assert turn.still_onboarding
+        assert "I'm Atlas" in turn.text
+        assert "testing mode" in turn.text
+        assert "free APIs" in turn.text
+        assert "rate limit" in turn.text
+
+
+async def test_testing_notice_can_be_disabled(uow):
+    async with uow:
+        user_id = await make_user(uow)
+        engine = OnboardingEngine(testing_notice=False)
+        turn = await engine.turn(uow, user_id=user_id, text="Hi")
+        assert "testing mode" not in turn.text
+        assert "I'm Atlas" in turn.text
+
+
+async def test_question_first_user_gets_notice_with_agent_reply(uow):
+    async with uow:
+        user_id = await make_user(uow)
+        engine = OnboardingEngine()
+        turn = await engine.turn(uow, user_id=user_id, text="What can you do?")
+        assert turn.completed
+        assert turn.followed_by_agent
+        assert turn.notice is not None
+        assert "testing mode" in turn.notice
+
+
+async def test_skip_first_user_gets_notice_with_agent_reply(uow):
+    async with uow:
+        user_id = await make_user(uow)
+        engine = OnboardingEngine()
+        turn = await engine.turn(uow, user_id=user_id, text="skip")
+        assert turn.completed
+        assert turn.followed_by_agent
+        assert "testing mode" in turn.notice
+
+
+async def test_media_first_user_gets_notice(uow):
+    async with uow:
+        user_id = await make_user(uow)
+        engine = OnboardingEngine()
+        turn = await engine.turn(uow, user_id=user_id, text="", is_media=True)
+        assert turn.completed
+        assert "testing mode" in turn.text
+
+
 async def test_google_connect_step_is_optional_and_skippable(uow):
     async with uow:
         user_id = await make_user(uow)

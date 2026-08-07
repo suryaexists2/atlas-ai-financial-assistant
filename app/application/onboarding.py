@@ -100,15 +100,25 @@ class OnboardingReply:
     still_onboarding: bool = False  # keep onboarding going next turn
     completed: bool = False  # onboarding finished (or shouldn't run) after this reply
     followed_by_agent: bool = False  # completed and the agent should also answer now
+    notice: str | None = None  # one-time testing-mode heads-up, if enabled
 
 
-_WELCOME = (
+_WELCOME_INTRO = (
     "Hi! I'm Atlas — your financial assistant.\n"
     "I can pull live quotes, filings and news, read your documents and voice "
-    "notes, and keep an eye on the companies you care about.\n\n"
+    "notes, and keep an eye on the companies you care about."
+)
+_WELCOME_QUESTIONS = (
     "A few quick questions make everything personalized — say 'skip' any time "
     "and we'll get straight to work. What best describes you? "
     "(Investor, Analyst, Founder, Student, Finance Professional…)"
+)
+# One-time heads-up for brand-new users: the bot currently runs on free APIs
+# in testing mode, so delays / rate limits are possible. Shown as part of the
+# welcome and, for users who skip onboarding, before the agent's first reply.
+_TEST_MODE_NOTICE = (
+    "Heads-up: I'm currently running in testing mode on free APIs, so "
+    "responses may sometimes be delayed or hit a rate limit. Bear with me!"
 )
 _ROLE_THEN = "Nice. Which companies, sectors, or markets do you follow? (e.g. Nvidia, AI, energy)"
 _INTERESTS_THEN = (
@@ -144,9 +154,21 @@ class OnboardingEngine:
         *,
         default_briefing_time: str = "08:00",
         google_connect_available: bool = False,
+        testing_notice: bool = True,
     ) -> None:
         self._default_briefing_time = default_briefing_time
         self._google_connect_available = google_connect_available
+        self._testing_notice = testing_notice
+
+    def _notice(self) -> str | None:
+        return _TEST_MODE_NOTICE if self._testing_notice else None
+
+    def _welcome_text(self) -> str:
+        text = _WELCOME_INTRO
+        notice = self._notice()
+        if notice:
+            text += "\n\n" + notice
+        return text + "\n\n" + _WELCOME_QUESTIONS
 
     async def turn(
         self,
@@ -166,17 +188,20 @@ class OnboardingEngine:
 
         if is_media:
             await self._complete(uow, user_id)
-            return OnboardingReply(
-                text=(
-                    "Jumping straight in — I'll process files and questions as they land. "
-                    "Whenever you're ready, tell me your interests and I'll tailor updates."
-                ),
-                completed=True,
+            text = (
+                "Jumping straight in — I'll process files and questions as they land. "
+                "Whenever you're ready, tell me your interests and I'll tailor updates."
             )
+            notice = self._notice()
+            if notice:
+                text += "\n\n" + notice
+            return OnboardingReply(text=text, completed=True)
 
         if _wants_agent(text):
             await self._complete(uow, user_id)
-            return OnboardingReply(completed=True, followed_by_agent=True)
+            return OnboardingReply(
+                completed=True, followed_by_agent=True, notice=self._notice()
+            )
 
         if step == "welcome":
             if _is_skip(text):
@@ -186,7 +211,9 @@ class OnboardingEngine:
                 await uow.profiles.upsert(user_id, briefing_time=briefing)
                 await self._ensure_morning_brief(uow, user_id, briefing)
                 await self._complete(uow, user_id)
-                return OnboardingReply(completed=True, followed_by_agent=True)
+                return OnboardingReply(
+                    completed=True, followed_by_agent=True, notice=self._notice()
+                )
             # The very first message may already answer the role question.
             role = _parse_role(text)
             if role:
@@ -201,7 +228,7 @@ class OnboardingEngine:
                 await self._set_step(uow, user_id, "interests")
                 return OnboardingReply(text=_INTERESTS_THEN, still_onboarding=True)
             await self._set_step(uow, user_id, "role")
-            return OnboardingReply(text=_WELCOME, still_onboarding=True)
+            return OnboardingReply(text=self._welcome_text(), still_onboarding=True)
 
         if step == "role":
             role = _parse_role(text)
