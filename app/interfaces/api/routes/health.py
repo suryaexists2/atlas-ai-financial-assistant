@@ -1,5 +1,7 @@
 """Health endpoints for uptime pings and deployment checks."""
 
+import os
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +19,7 @@ async def health(settings: Settings = Depends(get_settings)) -> dict:
         "app": settings.app_name,
         "version": settings.app_version,
         "env": settings.app_env,
+        "build": os.environ.get("RENDER_GIT_COMMIT"),
     }
 
 
