@@ -60,6 +60,26 @@ async def test_messages_are_isolated_per_conversation(uow, demo_user):
 
 
 @pytest.mark.asyncio
+async def test_list_messages_keeps_most_recent_window(uow, demo_user):
+    """list_messages(limit=N) must return the LAST N messages in chronological
+    order — the agent needs the newest user turn, not the oldest history."""
+    user_id = demo_user["user_id"]
+    async with uow:
+        convo = await uow.conversations.create(user_id)
+        for i in range(30):
+            await uow.conversations.add_message(
+                convo.id, role=MessageRole.USER, content=f"msg-{i:02d}"
+            )
+        await uow.commit()
+        convo_id = convo.id
+
+    async with uow:
+        recent = await uow.conversations.list_messages(convo_id, limit=10)
+        assert [m.content for m in recent] == [f"msg-{i:02d}" for i in range(20, 30)]
+        assert recent[-1].content == "msg-29"
+
+
+@pytest.mark.asyncio
 async def test_watchlist_add_get_deactivate(uow, demo_user):
     user_id = demo_user["user_id"]
 
