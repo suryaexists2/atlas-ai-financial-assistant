@@ -2,7 +2,16 @@
 
 import pytest
 
-from app.application.agent.context import build_messages, build_system_prompt
+from app.application.agent.context import SYSTEM_PROMPT, build_messages, build_system_prompt
+
+
+def test_system_prompt_has_integration_honesty_guardrail():
+    """The agent must never claim email/calendar/Drive actions it cannot do."""
+    assert "Gmail" in SYSTEM_PROMPT
+    assert "Google Calendar" in SYSTEM_PROMPT
+    assert "not connected yet" in SYSTEM_PROMPT
+    assert "Never claim to have sent email" in SYSTEM_PROMPT
+    assert build_system_prompt() == SYSTEM_PROMPT
 
 
 @pytest.mark.asyncio
