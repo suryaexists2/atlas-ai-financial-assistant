@@ -745,10 +745,20 @@ async def _schedule_meeting(ctx: ToolContext, args: dict[str, Any]) -> str:
         return _google_failure(exc)
 
 
+def _drive_search_query(text: str) -> str:
+    """Converts free-text terms into a valid Drive `q` parameter; passes
+    through queries that already contain Drive operators."""
+    lowered = text.lower()
+    if any(op in lowered for op in (" contains ", " in parents", " and ", " or ", "mimetype=")):
+        return text
+    return f"name contains '{text.replace(chr(39), chr(92) + chr(39))}'"
+
+
 async def _read_drive_doc(ctx: ToolContext, args: dict[str, Any]) -> str:
-    query = str(args.get("query") or "").strip()
-    if not query:
+    raw_query = str(args.get("query") or "").strip()
+    if not raw_query:
         return json.dumps({"error": "a search query is required"})
+    query = _drive_search_query(raw_query)
 
     async def run(token: str) -> str:
         drive = DriveClient(token, http=ctx.google_http)
@@ -1105,7 +1115,15 @@ DEFAULT_TOOLS: list[Tool] = [
             "Search the user's Google Drive for a file (PDF, spreadsheet, text, "
             "Google Doc/Sheet) and read/summarize its contents."
         ),
-        parameters={"query": {"type": "string", "description": "Drive search terms or filename"}},
+        parameters={
+            "query": {
+                "type": "string",
+                "description": (
+                    "The file the user wants (free-text name/topic, e.g. "
+                    "'earnings pdf' or 'inbound...pdf')."
+                ),
+            }
+        },
         required=["query"],
         handler=_read_drive_doc,
     ),

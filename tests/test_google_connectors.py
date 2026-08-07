@@ -606,6 +606,17 @@ async def test_read_drive_doc_not_connected(uow, demo_user):
     assert "not connected" in result["error"]
 
 
+def test_drive_search_query_translates_free_text():
+    from app.application.agent.tools import _drive_search_query
+
+    assert _drive_search_query("nvidia pdf") == "name contains 'nvidia pdf'"
+    assert _drive_search_query("o'brien report") == r"name contains 'o\'brien report'"
+    assert (
+        _drive_search_query("name contains 'nvidia' and mimeType='application/pdf'")
+        == "name contains 'nvidia' and mimeType='application/pdf'"
+    )
+
+
 @pytest.mark.asyncio
 async def test_schedule_meeting_not_connected(uow, demo_user):
     ctx = ToolContext(uow=uow, user_id=demo_user["user_id"], google_oauth=oauth_client())
