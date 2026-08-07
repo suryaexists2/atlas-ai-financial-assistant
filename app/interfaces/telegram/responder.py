@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.application.agent.core import AgentCore
@@ -11,6 +12,27 @@ from app.infrastructure.providers.finnhub import FinnhubClient
 from app.infrastructure.providers.sec import SecEdgarClient
 from app.interfaces.telegram.normalized import NormalizedMessage
 from app.interfaces.telegram.processor import ReplyContext
+
+# Requests to exfiltrate the system prompt / internal instructions. Narrow on
+# purpose: it only intercepts meta-attacks; normal questions keep flowing to
+# the agent (which also refuses via its rules).
+_EXFILTRATION_RE = re.compile(
+    r"(?i)\b(?:print|show|repeat|paste|send|reveal|share|disclose|leak|give|"
+    r"copy)\s+(?:me\s+|us\s+)?(?:your\s+|the\s+)?(?:full\s+|exact\s+|entire\s+|"
+    r"verbatim\s+)?(?:system\s+|developer\s+|base\s+|hidden\s+)?"
+    r"(?:prompt|instructions|system prompt|prompt\s+verbatim)\b"
+    r"|\bignore\s+(?:all|any)?\s*(?:previous|prior)\s+instructions\b"
+    r"|\b(?:system|developer)\s+prompt\s+verbatim\b"
+    r"|\bwhat\s+(?:is|are)\s+(?:your|the)\s+(?:system\s+)?"
+    r"(?:(?:prompt|instructions)\s+)*(?:prompt|instructions)"
+    r"\s+(?:verbatim|exactly|in\s+full)\b"
+)
+
+_REFUSAL_REPLY = (
+    "I can't share my internal instructions — they're confidential. "
+    "Happy to help with what I do best instead: quotes, news, filings, your "
+    "documents, reminders, or meetings. What would you like?"
+)
 
 
 class EchoComposer:
@@ -28,6 +50,15 @@ async def dev_echo_reply(message: NormalizedMessage) -> str:
             "I'll be able to analyze this soon."
         )
     return f"Got it — I heard: {message.combined_text}"
+
+
+def exfiltration_reply(text: str | None) -> str | None:
+    """Deterministic prompt-exfiltration guard: returns a canned refusal when
+    the message tries to reveal the system prompt or override instructions,
+    else None so the normal reply path runs."""
+    if not text:
+        return None
+    return _REFUSAL_REPLY if _EXFILTRATION_RE.search(text) else None
 
 
 class AgentComposer:
@@ -70,6 +101,11 @@ class AgentComposer:
             return onboarding_reply.text
         if not onboarding_reply.completed:
             return None
+        # Prompt-exfiltration attempts are answered deterministically: no LLM
+        # turn, no chance of a leak, no wasted tool rounds.
+        refusal = exfiltration_reply(ctx.message.combined_text)
+        if refusal:
+            return refusal
         # Onboarding already done (or a question exited it): run the agent.
         tool_ctx = ToolContext(
             uow=ctx.uow,
