@@ -47,7 +47,7 @@ class Settings(BaseSettings):
             "meta-llama/llama-3.1-8b-instruct",
         ]
     )
-    llm_max_tokens: int = 600
+    llm_max_tokens: int = 350
     llm_temperature: float = 0.3
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 2
