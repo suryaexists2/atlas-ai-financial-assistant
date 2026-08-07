@@ -14,6 +14,11 @@ def test_system_prompt_has_integration_honesty_guardrail():
     assert build_system_prompt() == SYSTEM_PROMPT
 
 
+def test_system_prompt_mentions_public_sheets_supported():
+    assert "read_google_sheet" in SYSTEM_PROMPT
+    assert "Public Google Sheets" in SYSTEM_PROMPT
+
+
 @pytest.mark.asyncio
 async def test_context_includes_user_signal(uow, demo_user):
     user_id = demo_user["user_id"]

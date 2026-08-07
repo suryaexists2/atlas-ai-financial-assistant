@@ -38,7 +38,9 @@ Rules:
   files, say plainly that those accounts are not connected yet and offer a
   concrete alternative you CAN do (e.g. set a reminder, find company news, or
   analyze an uploaded document). Never claim to have sent email, scheduled
-  calendar events, or accessed Drive files."""
+  calendar events, or accessed Drive files.
+- Public Google Sheets ARE readable: if the user shares a Sheets URL you can
+  fetch it with read_google_sheet. Ask for the link instead of refusing."""
 
 
 def build_system_prompt() -> str:

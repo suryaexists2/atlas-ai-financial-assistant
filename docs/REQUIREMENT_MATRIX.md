@@ -11,7 +11,7 @@ Status legend: ✅ Complete · 🟡 Partial · ❌ Missing. Live column: 👍 ve
 | 1 | Live in Telegram, natural conversation, no commands/menus/inline buttons | ✅ | `interfaces/telegram/processor.py`, `normalizer.py`, `normalized.py`; webhook route | `test_processor.py`, `test_normalizer.py`, `test_webhook.py` | Live | Agent replies seen in Telegram via webhook; no commands |
 | 2 | Communicate via text only (no slash commands, menus, quick replies) | ✅ | `processor.py`, `normalizer.py` | `test_normalizer.py` | Live | — |
 | 3 | Voice messages supported | ✅ (live) | `ingestion/pipeline.py`, `media_ai.py` (GroqSTT free / OpenRouter fallback), `main.py` (stt_provider) | `test_ingestion.py` (GroqSTT multipart/empty/http/pipeline), `test_processor_media.py` | 👍 | **2026-08-07 05:31–05:32 UTC**: 4 real voice notes (English, Hinglish, pure Hindi, English) → downloaded, Groq-transcribed (`documents` PROCESSED, transcripts correct incl. Devanagari), agent replied with live data (NVDA $218.99; earnings est/actual; Meta overview) — all outbox SENT. Stored as `[voice transcript]…` in conversation |
-| 4 | Images supported (OCR/vision) | ✅ | `media_ai.py` (vision model) | `test_processor_media.py`, `test_ingestion.py` | ⏳ | — |
+| 4 | Images supported (OCR/vision) | ✅ (live) | `media_ai.py` (vision model, OpenRouter chat path) | `test_processor_media.py`, `test_ingestion.py` | 👍 | 2026-08-07 05:39: real chart PNG via webhook → `documents` PROCESSED (`kind=image`), vision described "line graph comparing revenue growth of NVIDIA (NVDA) and Tesla (TSLA)…" + caption Q&A replied |
 | 5 | Conversational onboarding, skippable, gradual | ✅ | `application/onboarding.py` | `test_onboarding.py` | Live | Profile COMPLETED, prod |
 | 6 | Onboarding captures role, interests, watchlist, briefing time, reminders | ✅ | `onboarding.py` (+ `intelligence/jobs.py`) | `test_onboarding.py` | Live | Profile rows |
 | 7 | Always skippable; can start immediately | ✅ | `onboarding.py` (`_SKIP`, `_wants_agent`) | `test_onboarding.py` | Live | — |
@@ -20,8 +20,7 @@ Status legend: ✅ Complete · 🟡 Partial · ❌ Missing. Live column: 👍 ve
 | 10 | Explain WHY, not just forward headlines | ✅ | `briefing.py` (`_BRIEF_SYSTEM`, `_deterministic_summary`) | `test_intelligence.py` | Live | — |
 | 11 | Stay silent when nothing important | ✅ | `briefing.py` (returns None on no data) | `test_intelligence.py` | Live | silent when no news |
 | 12 | Natural follow-up: ask ONE good clarifying question when ambiguous | ✅ (LLM) | `agent/core.py` conversation loop | — | Live | — |
-| 13 | Maintain conversational context across interactions | ✅ | `conversation_service`, `repositories/conversation_market.py` (newest-window) | `test_conversation_watchlist.py` (window) | Live | 24-message window verified |
-| 14 | Financial research: company profile, overview | ✅ | `tools.py get_company_profile`, `providers/finnhub.py` | `test_agent_tools.py` | Live | — |
+| 13 | Maintain conversational context across interactions | ✅ | `conversation_service`, `repositories/conversation_market.py` (newest-window) | `test_conversation_watchlist.py` (window) | Live | 24-message window verified || 14 | Financial research: company profile, overview | ✅ | `tools.py get_company_profile`, `providers/finnhub.py` | `test_agent_tools.py` | Live | — |
 | 15 | Financial research: earnings summaries | ✅ | `get_company_earnings`, `finnhub.py` | `test_agent_tools.py` | Live | — |
 | 16 | Financial research: recent news / sentiment | ✅ | `get_company_news`, `get_market_news` | `test_agent_tools.py` | Live | NVIDIA news live |
 | 17 | Financial research: regulatory filings | ✅ | `get_company_filings`, `providers/sec.py` | `test_agent_tools.py` | Live | — |
@@ -34,7 +33,7 @@ Status legend: ✅ Complete · 🟡 Partial · ❌ Missing. Live column: 👍 ve
 | 24 | Accuracy: use reliable sources; communicate uncertainty | ✅ | provider-native responses; `briefing` only uses data block | — | Live | — |
 | 25 | Private/company research with citations-ish | ✅ (headlines carry source) | finnhub returns source field | — | Live | — |
 | 26 | Optional: Google Sheets (financial docs/spreadsheets) | ✅ | `providers/google_sheets.py`, `read_google_sheet` etc. | `test_agent_tools.py` | ⏳ | public-sheet reader works |
-| 27 | Optional: Gmail / Google Calendar / Google Drive | ❌ NOT implemented (deliberately optional; documented in `docs/REQUIREMENT_MATRIX.md` + report) | — | — | — | see “Optional integrations” note below |
+| 27 | Optional: Gmail / Google Calendar / Google Drive | ❌ NOT implemented (deliberately optional; documented) + **honesty guardrail shipped** | `agent/context.py` system prompt (never fabricate email/calendar/Drive actions; offer alternatives; public Sheets links readable) | `test_agent_context.py` (guardrail tests) | 👍 (guardrail live) | 2026-08-07 05:47-05:48: "search my emails" → "I don't have access to your emails…"; "schedule a meeting…" → "I'm not connected to your calendar or email, so I won't be able to schedule a meeting… (offered alternative)" |
 | 28 | Favorite watchlist & monitor alerts | ✅ | `watchlist` repos, tools `add/remove/list` | `test_agent_tools.py`, repo tests | Live | TSLA added |
 | 29 | Custom alerts: price move %, news trigger, SEC filing | ✅ | `intelligence/alerts.py` (price/news/filing) with cooldown, `create_*_alert` tools | `test_intelligence.py`, `test_scheduler.py` | Live | NVDA alert created |
 | 30 | Reminders ("remind me...") | ✅ | `intelligence/reminders.py`, `create_reminder` tool, job `once` disable | `test_scheduler.py` | 👍 | fired 04:26, key outbox "⏰ Reminder" SENT, `enabled=False` after fire (once-disable live) |
@@ -70,7 +69,9 @@ Status legend: ✅ Complete · 🟡 Partial · ❌ Missing. Live column: 👍 ve
 | Interest-scope daily briefing expansion (watchlist/interests/both) | ✅ deployed; next 08:00 cycle validates delivery prose |
 | Full live verification cycle (reminder fire, job events, branch advance) | ✅ done (reminder fired + once-disabled; job_events 04:30/04:45) |
 | E2E multi-workflow prod run | ✅ done (research, quote, watchlist, news, alert, reminder, document, voice) |
-| Voice STT success live | ✅ done — 4 real voice notes (EN/Hinglish/Hindi) transcribed via Groq, replies SENT (05:31–05:32 UTC) |
+| Voice STT live | ✅ done — 4 real voice notes (EN/Hinglish/Hindi) via Groq, replies SENT (05:31-05:32 UTC) |
+| Images/OCR live | ✅ done — real chart PNG → vision described, caption Q&A (05:39 UTC) |
+| Email/Calendar/Drive honesty guardrail | ✅ shipped + live-verified (05:47-05:48 UTC) |
 | Final spec audit + report | ✅ done — see `docs/DEPLOYMENT_REPORT.md` |
 
 ## Voice / STT known limitation (operator action)
