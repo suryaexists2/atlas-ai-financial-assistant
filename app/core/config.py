@@ -39,6 +39,14 @@ class Settings(BaseSettings):
 
     llm_provider: Literal["openrouter", "openai", "anthropic"] = "openrouter"
     llm_model: str = "meta-llama/llama-3.3-70b-instruct"
+    # Models tried in order when the primary model/route fails (per turn).
+    llm_fallback_models: list[str] = Field(
+        default_factory=lambda: [
+            "openai/gpt-4o-mini",
+            "google/gemini-2.0-flash",
+            "meta-llama/llama-3.1-8b-instruct",
+        ]
+    )
     llm_max_tokens: int = 600
     llm_temperature: float = 0.3
     llm_timeout_seconds: float = 60.0

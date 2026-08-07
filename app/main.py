@@ -109,6 +109,7 @@ def _build_agent_composer(settings: Settings) -> AgentComposer | None:
         settings.llm_model,
         timeout_seconds=settings.llm_timeout_seconds,
         max_retries=settings.llm_max_retries,
+        fallback_models=settings.llm_fallback_models,
     )
     finnhub = FinnhubClient(settings.finnhub_api_key) if settings.finnhub_api_key else None
     sec = SecEdgarClient(settings.sec_user_agent)
@@ -157,6 +158,7 @@ def _build_scheduler(settings: Settings, session_factory):
             settings.llm_model,
             timeout_seconds=settings.llm_timeout_seconds,
             max_retries=settings.llm_max_retries,
+            fallback_models=settings.llm_fallback_models,
         )
         if settings.openrouter_api_key
         else None

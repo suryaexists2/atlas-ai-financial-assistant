@@ -143,3 +143,82 @@ async def test_http_error_maps_to_gateway_error():
     gateway = _client_with(handler)
     with pytest.raises(LLMGatewayError):
         await gateway.complete([{"role": "user", "content": "hi"}])
+
+
+def _gateway_with(handler, *, model="model-x", fallbacks=None, max_retries=1):
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return OpenRouterGateway(
+        "test-key", model, max_retries=max_retries, fallback_models=fallbacks, http=http
+    )
+
+
+@pytest.mark.asyncio
+async def test_fallback_model_used_when_primary_route_fails():
+    requested_models: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requested_models.append(body["model"])
+        if body["model"] == "model-x":
+            return httpx.Response(404, text="model not found")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "from fallback"}}],
+                "model": body["model"],
+            },
+        )
+
+    gateway = _gateway_with(handler, fallbacks=["fallback-a", "fallback-a", "model-x"])
+    response = await gateway.complete([{"role": "user", "content": "hi"}])
+    assert response.content == "from fallback"
+    assert requested_models == ["model-x", "fallback-a"]
+
+
+@pytest.mark.asyncio
+async def test_auth_error_does_not_rotate():
+    requested_models: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requested_models.append(body["model"])
+        return httpx.Response(401, text="invalid api key")
+
+    gateway = _gateway_with(handler, fallbacks=["fallback-a"])
+    with pytest.raises(LLMGatewayError):
+        await gateway.complete([{"role": "user", "content": "hi"}])
+    assert requested_models == ["model-x"]
+
+
+@pytest.mark.asyncio
+async def test_all_models_failed_raises_combined_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="nope")
+
+    gateway = _gateway_with(handler, fallbacks=["fallback-a", "fallback-b"])
+    with pytest.raises(LLMGatewayError) as exc_info:
+        await gateway.complete([{"role": "user", "content": "hi"}])
+    assert "All 3 LLM model(s) failed" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_transient_error_rotates_after_retries_exhausted():
+    requested_models: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requested_models.append(body["model"])
+        if body["model"] == "model-x":
+            return httpx.Response(503, text="down")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "recovered"}}],
+                "model": body["model"],
+            },
+        )
+
+    gateway = _gateway_with(handler, fallbacks=["fallback-a"], max_retries=2)
+    response = await gateway.complete([{"role": "user", "content": "hi"}])
+    assert response.content == "recovered"
+    assert requested_models == ["model-x", "model-x", "model-x", "fallback-a"]

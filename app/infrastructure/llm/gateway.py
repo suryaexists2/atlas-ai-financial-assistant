@@ -16,12 +16,19 @@ from typing import Any
 import httpx
 
 from app.application.agent.ports import LLMGateway, LLMResponse, LLMToolCall
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
 class LLMGatewayError(RuntimeError):
     """Raised when the LLM provider cannot complete a request."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class LLMGatewayTransientError(LLMGatewayError):
@@ -37,14 +44,18 @@ class OpenRouterGateway(LLMGateway):
         base_url: str = _OPENROUTER_URL,
         timeout_seconds: float = 60.0,
         max_retries: int = 2,
+        fallback_models: list[str] | None = None,
         http: httpx.AsyncClient | None = None,
     ) -> None:
         self._api_key = api_key
-        self._model = model
         self._base_url = base_url
         self._timeout = timeout_seconds
         self._max_retries = max_retries
         self._http = http or httpx.AsyncClient(timeout=timeout_seconds)
+        self._models = [model]
+        for extra in fallback_models or []:
+            if extra and extra != model and extra not in self._models:
+                self._models.append(extra)
 
     async def complete(
         self,
@@ -54,26 +65,43 @@ class OpenRouterGateway(LLMGateway):
         max_tokens: int = 600,
         temperature: float = 0.3,
     ) -> LLMResponse:
-        body: dict[str, Any] = {
-            "model": self._model,
+        base_body: dict[str, Any] = {
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
         if tools:
-            body["tools"] = tools
-            body["tool_choice"] = "auto"
+            base_body["tools"] = tools
+            base_body["tool_choice"] = "auto"
 
-        attempt = 0
-        while True:
-            attempt += 1
-            try:
-                message, model, usage = await self._post(body)
-                return self._parse_response(message, model, usage)
-            except LLMGatewayTransientError:
-                if attempt > self._max_retries:
-                    raise
-                await asyncio.sleep(self._backoff(attempt))
+        last_error: LLMGatewayError | None = None
+        for model in self._models:
+            body = dict(base_body)
+            body["model"] = model
+            attempt = 0
+            while True:
+                attempt += 1
+                try:
+                    message, model_used, usage = await self._post(body)
+                    return self._parse_response(message, model_used, usage)
+                except LLMGatewayError as exc:
+                    last_error = exc
+                    if isinstance(exc, LLMGatewayTransientError) and attempt <= self._max_retries:
+                        await asyncio.sleep(self._backoff(attempt))
+                        continue
+                    if exc.status_code in (401, 403):
+                        raise
+                    break
+            logger.warning(
+                "llm_fallback_model",
+                model=model,
+                error=str(last_error)[:200],
+            )
+        if len(self._models) == 1:
+            raise last_error or LLMGatewayError("LLM provider request failed")
+        raise LLMGatewayError(
+            f"All {len(self._models)} LLM model(s) failed; last error: {last_error}"
+        ) from last_error
 
     async def _post(
         self, body: dict[str, Any]
@@ -91,11 +119,13 @@ class OpenRouterGateway(LLMGateway):
 
         if response.status_code == 429 or response.status_code >= 500:
             raise LLMGatewayTransientError(
-                f"LLM provider transient error {response.status_code}: {response.text[:200]}"
+                f"LLM provider transient error {response.status_code}: {response.text[:200]}",
+                status_code=response.status_code,
             )
         if response.status_code >= 400:
             raise LLMGatewayError(
-                f"LLM provider error {response.status_code}: {response.text[:200]}"
+                f"LLM provider error {response.status_code}: {response.text[:200]}",
+                status_code=response.status_code,
             )
 
         payload = response.json()
