@@ -155,6 +155,50 @@ async def test_context_media_placeholder_for_voice(uow, demo_user):
     assert any("voice message" in c for c in contents), contents
 
 
+@pytest.mark.asyncio
+async def test_context_truncates_long_history_messages(uow, demo_user):
+    """Long replies must be trimmed so cheap model context budgets are not
+    blown (OpenRouter free routes reject prompts above their input cap)."""
+    user_id = demo_user["user_id"]
+    async with uow:
+        conversation = await uow.conversations.create(user_id)
+        await uow.conversations.add_message(
+            conversation.id,
+            role="assistant",
+            content="x" * 5000,
+            content_type="text",
+        )
+        await uow.commit()
+        conversation_id = conversation.id
+
+    async with uow:
+        messages = await build_messages(uow, user_id=user_id, conversation_id=conversation_id)
+    history = [m for m in messages if m["role"] == "assistant"]
+    assert history, "history message must be present"
+    assert len(history[0]["content"]) <= 410, "long content must be truncated"
+    assert history[0]["content"].endswith("…")
+
+
+@pytest.mark.asyncio
+async def test_context_respects_message_window(uow, demo_user):
+    user_id = demo_user["user_id"]
+    async with uow:
+        conversation = await uow.conversations.create(user_id)
+        for i in range(12):
+            await uow.conversations.add_message(
+                conversation.id, role="user", content=f"msg {i}", content_type="text"
+            )
+        await uow.commit()
+        conversation_id = conversation.id
+
+    async with uow:
+        messages = await build_messages(
+            uow, user_id=user_id, conversation_id=conversation_id, max_messages=6
+        )
+    user_msgs = [m["content"] for m in messages if m["role"] == "user"]
+    assert user_msgs == [f"msg {i}" for i in range(6, 12)], "only the latest 6 messages"
+
+
 def test_system_prompt_is_stable():
     prompt = build_system_prompt()
     assert "Atlas" in prompt

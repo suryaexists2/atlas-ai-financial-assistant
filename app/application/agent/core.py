@@ -33,7 +33,7 @@ class AgentCore:
         max_tokens: int = 600,
         temperature: float = 0.3,
         fallback_reply: str = "Sorry — I hit a temporary hiccup. Try again in a moment.",
-        max_context_messages: int = 24,
+        max_context_messages: int = 10,
         debug_reply_errors: bool = False,
     ) -> None:
         self._gateway = gateway

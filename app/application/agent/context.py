@@ -65,6 +65,12 @@ def build_system_prompt() -> str:
     return SYSTEM_PROMPT
 
 
+# Maximum characters of history per message. Keeps the prompt inside cheap
+# model context budgets (free-tier OpenRouter routes cap input tokens) while
+# preserving the gist of recent turns.
+_MAX_HISTORY_CHARS = 400
+
+
 async def build_messages(
     uow: UnitOfWork,
     *,
@@ -118,6 +124,8 @@ async def build_messages(
                 if label:
                     messages.append({"role": "user", "content": label})
             continue
+        if len(content) > _MAX_HISTORY_CHARS:
+            content = content[: _MAX_HISTORY_CHARS].rstrip() + " …"
         messages.append({"role": role, "content": content})
 
     return messages
