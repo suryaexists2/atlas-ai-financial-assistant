@@ -10,7 +10,7 @@ Status legend: ✅ Complete · 🟡 Partial · ❌ Missing. Live column: 👍 ve
 |---|---|---|---|---|---|---|
 | 1 | Live in Telegram, natural conversation, no commands/menus/inline buttons | ✅ | `interfaces/telegram/processor.py`, `normalizer.py`, `normalized.py`; webhook route | `test_processor.py`, `test_normalizer.py`, `test_webhook.py` | Live | Agent replies seen in Telegram via webhook; no commands |
 | 2 | Communicate via text only (no slash commands, menus, quick replies) | ✅ | `processor.py`, `normalizer.py` | `test_normalizer.py` | Live | — |
-| 3 | Voice messages supported | ✅ (code) / operator action needed for live transcription | `ingestion/pipeline.py`, `media_ai.py` (Whisper via OpenRouter **or free Groq**), `main.py` (stt_provider) | `test_ingestion.py` (GroqSTT multipart/empty/http/plugs-in), `test_processor_media.py` | 👍 when `STT_PROVIDER=groq` + free `GROQ_API_KEY` | Fresh bot-owned voice file_id downloads; graceful fallback reply live. OpenRouter gates all audio behind ≥$0.50 balance (402 confirmed); **free path: set `STT_PROVIDER=groq` + a free Groq key (console.groq.com)** — no balance gate, tests green, drop-in via `GroqSTT` |
+| 3 | Voice messages supported | ✅ (live) | `ingestion/pipeline.py`, `media_ai.py` (GroqSTT free / OpenRouter fallback), `main.py` (stt_provider) | `test_ingestion.py` (GroqSTT multipart/empty/http/pipeline), `test_processor_media.py` | 👍 | **2026-08-07 05:31–05:32 UTC**: 4 real voice notes (English, Hinglish, pure Hindi, English) → downloaded, Groq-transcribed (`documents` PROCESSED, transcripts correct incl. Devanagari), agent replied with live data (NVDA $218.99; earnings est/actual; Meta overview) — all outbox SENT. Stored as `[voice transcript]…` in conversation |
 | 4 | Images supported (OCR/vision) | ✅ | `media_ai.py` (vision model) | `test_processor_media.py`, `test_ingestion.py` | ⏳ | — |
 | 5 | Conversational onboarding, skippable, gradual | ✅ | `application/onboarding.py` | `test_onboarding.py` | Live | Profile COMPLETED, prod |
 | 6 | Onboarding captures role, interests, watchlist, briefing time, reminders | ✅ | `onboarding.py` (+ `intelligence/jobs.py`) | `test_onboarding.py` | Live | Profile rows |
@@ -70,7 +70,7 @@ Status legend: ✅ Complete · 🟡 Partial · ❌ Missing. Live column: 👍 ve
 | Interest-scope daily briefing expansion (watchlist/interests/both) | ✅ deployed; next 08:00 cycle validates delivery prose |
 | Full live verification cycle (reminder fire, job events, branch advance) | ✅ done (reminder fired + once-disabled; job_events 04:30/04:45) |
 | E2E multi-workflow prod run | ✅ done (research, quote, watchlist, news, alert, reminder, document, voice) |
-| Voice STT success live | ⏳ blocked on OpenRouter balance (needs ≥$0.50 credit) |
+| Voice STT success live | ✅ done — 4 real voice notes (EN/Hinglish/Hindi) transcribed via Groq, replies SENT (05:31–05:32 UTC) |
 | Final spec audit + report | ✅ done — see `docs/DEPLOYMENT_REPORT.md` |
 
 ## Voice / STT known limitation (operator action)

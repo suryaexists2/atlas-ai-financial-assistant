@@ -1,64 +1,87 @@
-﻿# Atlas AI Financial Assistant â€” Deployment Report
+﻿# Atlas AI Financial Assistant - Deployment Report
 
-Date: 2026-08-07 Â· Environment: production (Render, Singapore, free tier)
-Commit: `612a1ce` "Fix scheduler misfire death, add interest-scope briefings, spec docs"
+Date: 2026-08-08 · Environment: production (Render free tier)
+Commits: `612a1ce`, `932ba75`, `398c823` (auto-deployed on push to `origin/main`)
 
 ## 1. What was deployed
 
 | Area | Detail |
 |---|---|
-| Repo | `atlas-ai-assistant` (Push to `origin/main`, auto-deployed on Render) |
-| Base URL | `https://atlas-bot-peop.onrender.com/` (health `GET /health` â†’ `{"status":"ok","app":"Atlas","version":"0.1.0","env":"prod"}`) |
-| Bot | `atlasassistant_ai_bot` â€” no slash commands, no menus |
-| Storage | PostgreSQL (Supabase pooler), SQLite locally |
+| Repo | `atlas-ai-assistant` (GitHub `suryaexists2/atlas-ai-financial-assistant`) |
+| Base URL | `https://atlas-bot-peop.onrender.com/` (`GET /health` -> `{"status":"ok","app":"Atlas","version":"0.1.0","env":"prod"}`) |
+| Bot | `@atlasassistant_ai_bot` - natural text + voice only, no commands/menus |
+| Storage | PostgreSQL (Supabase neon, asyncpg) prod; SQLite locally |
+| STT | `STT_PROVIDER=groq` + free `GROQ_API_KEY` (Render env, not exposed) |
 
-## 2. Two production bugs found & fixed this deployment
+## 2. Bugs fixed and shipped this milestone
 
-1. **Scheduler permanently died on the first stale job**
-   - `scheduling/worker.py` logged via `logging.getLogger` but called `logger.warning(..., job_id=...)`; the structlog-configured logger rejected the extra kwargs with `TypeError`, which aborted every `sweep_once()`. As soon as one job fell behind, the scheduler crashed forever and missed every scheduled task.
-   - Fix: `logger = get_logger(__name__)` from `app.core.logging`.
-   - Regression test: `test_misfired_job_recovers_to_next_boundary` (stale job lands on a real future boundary instead of staying in the past forever).
+1. **Scheduler permanently died on the first stale job** (`scheduling/worker.py`).
+   It logged via `logging.getLogger`, but called `logger.warning(..., job_id=...)`;
+   the structlog logger rejects extra kwargs with `TypeError`, aborting every
+   `sweep_once()`. Fix: `logger = get_logger(__name__)`. Regression test:
+   `test_misfired_job_recovers_to_next_boundary`.
 
-2. Stale `next_run_at` during sleep = permanent misfires
-   - While Render's free tier put the bot to sleep, jobs were "due" in the past (`next_run > now`). Prior code kept the past timestamp and re-fired it forever. Now `compute_next_run(cron, after=now)` guarantees the job always lands on its next real future boundary.
+2. **Stale `next_run_at` while Render sleeps = recurring misfires.** Jobs were
+   perpetually "due" in the past. Fix: `compute_next_run(cron, after=now)` so a job
+   always lands on its next future boundary.
 
-## 3. Live verification results (all against the deployed prod)
+3. **Voice STT failed in prod** because OpenRouter now requires a minimum **$0.50
+   account balance for any audio** (HTTP 402 on every request). Fix: added
+   `GroqSTT` - a free, drop-in provider using Groq's OpenAI-compatible
+   (multipart) transcriptions API with no balance gate. 4 new tests
+   (multipart request shape, empty result, HTTP error, pipeline drop-in).
+
+## 3. Live regression (prod)
 
 | Item | Result |
 |---|---|
-| Health | 200 `{"status":"ok",...}` |
-| Cycle jobs | `price_alerts` (`*/15`), `news_alerts` / `filing_alerts` (`*/30`) woke at 04:30 / 04:45 â€” `job_events` recorded, `next_run_at` advanced to 05:00 |
-| Reminder | "â° Reminder: review the audit" â†’ enqueued 04:26:16, **SENT** 04:26:22; job `enabled=false` after fire (`once`-disable works) |
-| Outbox | 53 items SENT; outbox worker (retry/backoff/rate-limit, idempotent) healthy |
-| E2E (8 workflows) | research â†’ company profile (Microsoft); benchmark quote Meta; watchlist add+list; market news; NVDA price alert; reminder; PDF doc â†’ **5 key points** reply + `documents` PROCESSED; voice â†’ graceful fallback |
-| Document | file_id (real PDF); `documents.status = PROCESSED`, `doc_meta.kind=document`, reply 04:40:02 |
+| Health | 200 OK |
+| Cycle jobs | `price_alerts`, `news_alerts`, `filing_alerts` ran 04:30 / 04:45; `next_run_at` advanced to 05:00; `job_events` recorded |
+| Reminder | "⏰ Reminder: review the audit" enqueued 04:26:16, **SENT** 04:26:22; job auto-disabled (`enabled=false`) after fire |
+| E2E (text) | research, quote, watchlist, market news, NVDA alert, reminder, PDF doc - all acked; document PROCESSED + reply SENT |
+| **Voice (new)** | **4 real voice notes, all transcribed + replied** (see below) |
 
-## 4. Regression gate at deploy time
+### Voice-STT end-to-end proof (05:31-05:32 UTC)
 
-- `pytest`: **189 tests, exit 0** (asyncio, UoW, queries)
+| Voice | Lang | Doc status | Transcript persisted | Agent reply (SENT) |
+|---|---|---|---|---|
+| `voice_en` | EN | PROCESSED | "What's today's market price and the biggest news for NVIDIA?" | current NVDA price $218.99 (-0.10%), high/low/open |
+| `voice_hi` | Hinglish | PROCESSED | "इन्वीडिया का शेयर प्राइस क्या है और आज की टॉप निउस क्या है?" | NVDA $218.99 high/low open reply |
+| `voice_hi_pure` | Hindi | PROCESSED | "मुझे Nvidia के latest earnings का summary दो।" | NVDA earnings: est 1.7922 / actual 1.87 (beat) |
+| `voice_meta` | EN | PROCESSED | "Give me a quick overview of Meta and the latest earnings." | Meta company overview reply |
+
+Chain: Telegram voice update -> download (fresh bot-owned file_id) -> Groq Whisper
+-> transcript persisted as `[voice transcript]...` message + `documents.status =
+PROCESSED` -> Atlas agent (LLM) -> outbox reply -> Telegram SENT. English and
+Hindi/Hinglish both verified; transcripts correct in Devanagari for the Indic
+clips; old 402-failure rows (04:42/04:47) remain only as historical evidence and
+now succeed after the Groq switch.
+
+## 4. Regression gate
+
+- `pytest`: **193 tests, exit 0** (asyncio, UoW, queries, provider mocks)
 - `ruff` clean (`check` + `format`)
 
-## 5. Voice / STT â€” solved with a FREE path (no OpenRouter credit needed)
+## 5. Voice / STT details
 
-- The OpenRouter STT request (`POST https://openrouter.ai/api/v1/audio/transcriptions`,
-  JSON `input_audio` base64) matches OpenRouter's documented contract, but OpenRouter now
-  enforces a **minimum $0.50 balance for any audio request** â€” below that every call returns:
-  `{"error":{"message":"This request requires at least $0.50 in balance for audio","code":402,...}}`
-  (confirmed live 2026-08-07 against our exact payload). Chat/LLM paths are unaffected.
-- **Free fix (shipped in this deployment):** a `GroqSTT` provider that calls Groq's
-  OpenAI-compatible, free-tier Whisper endpoint (`https://api.groq.com/openai/v1/audio/transcriptions`,
-  multipart `file`), which has **no balance gate**. Configure in Render env:
-  - `STT_PROVIDER=groq`
-  - `GROQ_API_KEY=<free key from https://console.groq.com>`
-  - (optional) `GROQ_STT_MODEL=whisper-large-v3-turbo`
-- If `STT_PROVIDER` is unset, OpenRouter remains the default (vision keeps using OpenRouter
-  whenever its key is present). All four new tests cover the Groq adapter
-  (`test_groq_stt_sends_openai_style_multipart`, empty, HTTP error, pipeline drop-in).
+- OpenRouter audio gate confirmed live: HTTP `402` `{"code":402,"message":"This
+  request requires at least $0.50 in balance for audio"}`; applies to every
+  audio request on the account (any model / chat-with-audio). No workaround on
+  that provider; top-up or free alternative required.
+- Free path: set `STT_PROVIDER=groq` with a free `GROQ_API_KEY`
+  (https://console.groq.com). `GroqSTT` posts multipart to
+  `https://api.groq.com/openai/v1/audio/transcriptions`.
+- If `STT_PROVIDER` is unset the app keeps OpenRouter as the default; vision
+  always uses OpenRouter when its key is present.
 
 ## 6. Remaining items
 
-- [ ] Create a free key at https://console.groq.com â†’ set `STT_PROVIDER=groq` +
-      `GROQ_API_KEY` on Render â†’ send one voice message â†’ confirm `documents.status=PROCESSED`
-      and the transcript text in the reply.
-- [ ] Watch the 08:00 UTC daily briefing run (now `scope=both`) to capture the interest-section prose live.
-- Optional integrations (Gmail/Calendar/Drive) deliberately deferred; documented in `docs/REQUIREMENT_MATRIX.md`.
+- [x] Voice live-verified (EN + Hindi/Hinglish) 2026-08-07 05:31-05:32 UTC
+- [ ] Watch the 08:00 UTC daily-brief run (`scope=both`) for the interest-section prose
+- Optional Gmail / Calendar / Drive: deliberately deferred (see matrix note)
+
+## 7. Security note
+
+No API keys or secrets are printed, committed, or logged. Env secret pointers
+used for behavior confirmation only. Voice transcripts in DB contain no secret
+data.
