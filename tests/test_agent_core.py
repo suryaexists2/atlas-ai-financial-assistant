@@ -16,10 +16,11 @@ class FakeGateway:
     def __init__(self, responses):
         self._responses = list(responses)
         self.requests = []
+        self.request_tools = []
 
     async def complete(self, messages, *, tools=None, max_tokens=600, temperature=0.3):
         self.requests.append(messages)
-        assert tools, "tool schemas must always be passed"
+        self.request_tools.append(tools)
         response = self._responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -113,6 +114,43 @@ async def test_max_tool_rounds_exhausted_returns_fallback(uow, demo_user):
             LLMResponse(
                 content=None, tool_calls=[LLMToolCall(id="t", name="list_memories", arguments={})]
             ),
+            LLMResponse(content="Here is my final answer.", tool_calls=[]),
+        ]
+    )
+    agent = make_agent(gateway, fallback_reply="Sorry, try again.")  # max_tool_rounds=2
+    async with uow:
+        reply = await agent.run(
+            uow,
+            user_id=demo_user["user_id"],
+            conversation_id=conversation_id,
+            tool_context=ToolContext(uow=uow, user_id=demo_user["user_id"]),
+        )
+    # Budget exhausted -> the caller gets one tools-free final pass, not the
+    # generic fallback, so the user still receives a real answer.
+    assert reply == "Here is my final answer."
+    assert gateway.request_tools[-1] is None
+
+
+@pytest.mark.asyncio
+async def test_final_plain_reply_empty_still_falls_back(uow, demo_user):
+    """If the tools-free final pass yields nothing, degrade to the fallback."""
+    async with uow:
+        conversation = await uow.conversations.create(demo_user["user_id"])
+        await uow.commit()
+        conversation_id = conversation.id
+
+    gateway = FakeGateway(
+        [
+            LLMResponse(
+                content=None, tool_calls=[LLMToolCall(id="t", name="list_memories", arguments={})]
+            ),
+            LLMResponse(
+                content=None, tool_calls=[LLMToolCall(id="t", name="list_memories", arguments={})]
+            ),
+            LLMResponse(
+                content=None, tool_calls=[LLMToolCall(id="t", name="list_memories", arguments={})]
+            ),
+            LLMResponse(content="", tool_calls=[]),
         ]
     )
     agent = make_agent(gateway, fallback_reply="Sorry, try again.")  # max_tool_rounds=2

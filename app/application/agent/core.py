@@ -146,7 +146,51 @@ class AgentCore:
             return self._degrade(f"turn_exception: {type(exc).__name__}: {exc}")
 
         logger.warning("agent_tool_rounds_exhausted", rounds=self._max_tool_rounds)
+        # The model spent the whole budget issuing tool calls without a final
+        # answer (e.g. a tool chain that keeps asking for verification). Give
+        # it one last tools-free pass so the user still gets a real reply
+        # instead of the generic fallback.
+        reply = await self._final_plain_reply(messages)
+        if reply:
+            return reply
         return self._degrade("tool_rounds_exhausted")
+
+    async def _final_plain_reply(self, messages: list[dict[str, Any]]) -> str:
+        """One last completion with tools disabled, asking for a plain-text
+        final answer. Returns "" if the gateway fails or replies empty."""
+        forced = [
+            *messages,
+            {
+                "role": "user",
+                "content": (
+                    "You have reached the maximum number of tool calls for this "
+                    "turn. Now give your final answer to the user as plain text, "
+                    "without any function calls. If an action you already took "
+                    "succeeded, tell the user what happened (for example, include "
+                    "the calendar event link that was returned to you). If you "
+                    "still need more information from a tool, say so plainly."
+                ),
+            },
+        ]
+        try:
+            response = await self._gateway.complete(
+                forced,
+                tools=None,
+                max_tokens=self._max_tokens,
+                temperature=self._temperature,
+            )
+        except LLMGatewayError as exc:
+            logger.warning("agent_final_plain_reply_gateway_error", error=str(exc))
+            return ""
+        text = (response.content or "").strip()
+        if not text:
+            logger.warning(
+                "agent_final_plain_reply_empty",
+                finish_reason=response.finish_reason,
+                model=response.model,
+            )
+            return ""
+        return text
 
 
 __all__ = ["AgentCore"]
