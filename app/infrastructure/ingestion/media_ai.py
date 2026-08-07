@@ -1,7 +1,10 @@
-"""OpenRouter-based speech-to-text and image vision via httpx.
+"""OpenRouter / Groq audio STT and OpenRouter image vision via httpx.
 
-STT: POST https://openrouter.ai/api/v1/audio/transcriptions with a JSON body
-`{"model": ..., "input_audio": {"data": <raw base64>, "format": ...}}`.
+OpenRouter STT: POST https://openrouter.ai/api/v1/audio/transcriptions with a
+JSON body `{"model": ..., "input_audio": {"data": <raw base64>, "format": ...}}`.
+Note: OpenRouter requires a >=$0.50 account balance for any audio request (402
+otherwise). GroqSTT uses Groq's OpenAI-compatible (multipart) transcriptions
+API, which has a free tier and no such balance requirement.
 
 Vision: standard OpenAI-style chat completion with an `image_url` data URI,
 asking the model to both describe the image and transcribe any readable text
@@ -29,6 +32,52 @@ _VISION_PROMPT = (
     "relevant numbers and labels exactly (OCR). Be factual and complete; "
     "do not interpret the meaning."
 )
+
+
+_GROQ_TRANSCRIPTIONS_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+
+
+class GroqSTT:
+    """Free speech-to-text via Groq's OpenAI-compatible transcriptions API.
+
+    Groq's Whisper endpoints have a free tier (rate-limited); no OpenRouter
+    balance requirement. The API is OpenAI-style multipart (`file` + `model`),
+    so this is a plain httpx call with no extra SDK dependency.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str = "whisper-large-v3-turbo",
+        timeout_seconds: float = 90.0,
+        http: httpx.AsyncClient | None = None,
+    ) -> None:
+        self._api_key = api_key
+        self._model = model
+        self._http = http or httpx.AsyncClient(timeout=timeout_seconds)
+
+    async def transcribe(self, source: FileData) -> str:
+        fmt = OpenRouterMediaAI._audio_format(source)
+        filename = f"voice.{fmt}"
+        mime = source.mime_type or "application/octet-stream"
+        headers = {"Authorization": f"Bearer {self._api_key}"}
+        try:
+            response = await self._http.post(
+                _GROQ_TRANSCRIPTIONS_URL,
+                data={"model": self._model},
+                headers=headers,
+                files={"file": (filename, source.raw, mime)},
+            )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Groq STT request failed: {exc}") from exc
+        if response.status_code >= 400:
+            raise RuntimeError(f"Groq STT error {response.status_code}: {response.text[:200]}")
+        payload = response.json()
+        text = (payload.get("text") or "").strip()
+        if not text:
+            raise RuntimeError("Groq STT returned empty transcription")
+        return text
 
 
 class OpenRouterMediaAI:
@@ -136,4 +185,4 @@ class OpenRouterMediaAI:
         return "image/jpeg"
 
 
-__all__ = ["OpenRouterMediaAI"]
+__all__ = ["GroqSTT", "OpenRouterMediaAI"]

@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     ingestion_excerpt_chars: int = 8_000  # excerpt shown to the model per media message
     stt_model: str = "openai/whisper-1"
     vision_model: str = "openai/gpt-4o-mini"
+    # STT backend: "openrouter" (Whisper via OpenRouter, needs ~$0.50 credit) or
+    # "groq" (free Groq Whisper, needs a free GROQ_API_KEY from console.groq.com).
+    stt_provider: Literal["openrouter", "groq"] = "openrouter"
+    groq_api_key: str | None = Field(default=None, repr=False)
+    groq_stt_model: str = "whisper-large-v3-turbo"
     stt_timeout_seconds: float = 90.0
     vision_timeout_seconds: float = 60.0
     media_download_timeout_seconds: float = 60.0

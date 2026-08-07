@@ -53,16 +53,21 @@ def _build_worker(settings: Settings, session_factory, sender: TelegramSender) -
 
 def _build_media_ingestor(settings: Settings, bot):
     """Builds the media->text pipeline (download + parse + chunk). AI parsers
-    (voice STT, image vision) activate only when an OpenRouter key is present;
-    pure-file parsers (txt/csv/json/pdf/docx/xlsx/md) always work."""
+    (voice STT, image vision) activate only when credentials are present;
+    pure-file parsers (txt/csv/json/pdf/docx/xlsx/md) always work.
+
+    STT backend: `settings.stt_provider` selects Groq (free Whisper API, no
+    OpenRouter balance gate) or OpenRouter (needs ~$0.50 account credit).
+    Vision always uses OpenRouter when a key is set."""
     from app.application.ingestion.pipeline import IngestionPipeline
     from app.infrastructure.ingestion.downloader import TelegramFileFetcher
-    from app.infrastructure.ingestion.media_ai import OpenRouterMediaAI
+    from app.infrastructure.ingestion.media_ai import GroqSTT, OpenRouterMediaAI
     from app.infrastructure.ingestion.parsers import build_default_registry
     from app.interfaces.telegram.normalized import NormalizedMessage
 
     stt = None
     vision = None
+    media_ai = None
     if settings.openrouter_api_key:
         media_ai = OpenRouterMediaAI(
             settings.openrouter_api_key,
@@ -70,8 +75,16 @@ def _build_media_ingestor(settings: Settings, bot):
             vision_model=settings.vision_model,
             timeout_seconds=max(settings.stt_timeout_seconds, settings.vision_timeout_seconds),
         )
-        stt = media_ai
         vision = media_ai
+    if settings.stt_provider == "groq":
+        if settings.groq_api_key:
+            stt = GroqSTT(
+                settings.groq_api_key,
+                model=settings.groq_stt_model,
+                timeout_seconds=settings.stt_timeout_seconds,
+            )
+    elif media_ai is not None:
+        stt = media_ai
 
     registry = build_default_registry(stt=stt, vision=vision)
     pipeline = IngestionPipeline(

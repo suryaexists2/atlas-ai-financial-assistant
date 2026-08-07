@@ -374,3 +374,85 @@ def test_truncate_excerpt_bounds():
     excerpt, truncated = chunker.truncate_excerpt(text, max_chars=10)
     assert truncated
     assert len(excerpt) == 10
+
+
+# --- Groq STT provider (free voice transcription) -----------------------------
+
+
+def _make_groq_success(*, json):
+    import httpx
+
+    return httpx.MockTransport(lambda req: httpx.Response(200, json=json))
+
+
+async def test_groq_stt_sends_openai_style_multipart():
+    """Checks the wire shape: Groq endpoint path, Bearer auth, file upload."""
+    import httpx
+
+    from app.infrastructure.ingestion.media_ai import GroqSTT
+
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["auth"] = request.headers.get("authorization")
+        assert request.content  # multipart body present
+        body = request.content.decode("utf-8", errors="ignore")
+        captured["has_ogg"] = 'filename="voice.ogg"' in body
+        captured["has_model"] = 'name="model"' in body
+        return httpx.Response(200, json={"text": "what is the revenue growth"})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http:
+        stt = GroqSTT("groq-test-key", http=http)
+        data = FileData(raw=b"ogg-bytes", mime_type="audio/ogg", filename="voice.ogg")
+        assert await stt.transcribe(data) == "what is the revenue growth"
+    assert captured["path"] == "/openai/v1/audio/transcriptions"
+    assert captured["auth"] == "Bearer groq-test-key"
+    assert captured["has_ogg"]
+    assert captured["has_model"]
+
+
+async def test_groq_stt_empty_raises():
+    import httpx
+
+    from app.infrastructure.ingestion.media_ai import GroqSTT
+
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, json={"text": ""}))
+    async with httpx.AsyncClient(transport=transport) as http:
+        stt = GroqSTT("groq-test-key", http=http)
+        data = FileData(raw=b"ogg-bytes", mime_type="audio/ogg")
+        with pytest.raises(RuntimeError):
+            await stt.transcribe(data)
+
+
+async def test_groq_stt_http_error_raises():
+    import httpx
+
+    from app.infrastructure.ingestion.media_ai import GroqSTT
+
+    transport = httpx.MockTransport(lambda req: httpx.Response(402, json={"error": "nope"}))
+    async with httpx.AsyncClient(transport=transport) as http:
+        stt = GroqSTT("groq-test-key", http=http)
+        data = FileData(raw=b"ogg-bytes", mime_type="audio/ogg")
+        with pytest.raises(RuntimeError):
+            await stt.transcribe(data)
+
+
+async def test_groq_stt_plugs_into_pipeline():
+    """The free Groq STT is a drop-in SpeechToText for the ingestion pipeline."""
+    import httpx
+
+    from app.infrastructure.ingestion.media_ai import GroqSTT
+
+    transport = httpx.MockTransport(
+        lambda req: httpx.Response(200, json={"text": "compare TSLA and NVDA"})
+    )
+    async with httpx.AsyncClient(transport=transport) as http:
+        stt = GroqSTT("groq-test-key", http=http)
+        data = FileData(raw=b"ogg-bytes", mime_type="audio/ogg", filename="voice.ogg")
+        pipeline = make_pipeline(FakeFetcher(data), stt=stt)
+        result = await pipeline.process(file_id="gr1", mime_type="audio/ogg", filename=None)
+        assert result.ok
+        assert result.document.kind is DocumentKind.VOICE
+        assert "compare TSLA and NVDA" in result.document.text
