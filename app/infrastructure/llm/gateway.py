@@ -50,6 +50,7 @@ class OpenRouterGateway(LLMGateway):
         fallback_models: list[str] | None = None,
         http: httpx.AsyncClient | None = None,
         skip_seconds: int = 600,
+        rate_limit_skip_seconds: int = 60,
         registry: FreeModelRegistry | None = None,
     ) -> None:
         self._api_key = api_key
@@ -62,6 +63,9 @@ class OpenRouterGateway(LLMGateway):
             if extra and extra != model and extra not in self._models:
                 self._models.append(extra)
         self._skip_seconds = skip_seconds
+        # 429/rate limits reset fast (seconds), auth/404 problems persist
+        # (minutes) — a short 429 penalty keeps the primary engine in play.
+        self._rate_limit_skip_seconds = min(rate_limit_skip_seconds, skip_seconds)
         self._registry = registry
         # model -> expiry timestamp (monotonic); skipped models are not tried.
         self._skip_until: dict[str, float] = {}
@@ -81,8 +85,11 @@ class OpenRouterGateway(LLMGateway):
             if extra.reasoning_disablable:
                 self._reasoning_off[extra.id] = {"enabled": False}
 
-    def _skip(self, model: str) -> None:
-        self._skip_until[model] = time.monotonic() + self._skip_seconds
+    def _skip(self, model: str, status_code: int | None = None) -> None:
+        duration = (
+            self._rate_limit_skip_seconds if status_code == 429 else self._skip_seconds
+        )
+        self._skip_until[model] = time.monotonic() + duration
 
     def _chain(self) -> list[str]:
         now = time.monotonic()
@@ -158,7 +165,7 @@ class OpenRouterGateway(LLMGateway):
                     if exc.status_code in (401, 403):
                         raise
                     if exc.status_code is not None:
-                        self._skip(model)
+                        self._skip(model, exc.status_code)
                     break
             logger.warning(
                 "llm_fallback_model",
@@ -277,6 +284,7 @@ class GroqGateway(OpenRouterGateway):
         fallback_models: list[str] | None = None,
         http: httpx.AsyncClient | None = None,
         skip_seconds: int = 600,
+        rate_limit_skip_seconds: int = 60,
     ) -> None:
         super().__init__(
             api_key,
@@ -287,6 +295,7 @@ class GroqGateway(OpenRouterGateway):
             fallback_models=fallback_models,
             http=http,
             skip_seconds=skip_seconds,
+            rate_limit_skip_seconds=rate_limit_skip_seconds,
             registry=None,
         )
 

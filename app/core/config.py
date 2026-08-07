@@ -42,13 +42,15 @@ class Settings(BaseSettings):
     # Models tried in order when the primary model/route fails (per turn).
     # Paid first for quality while credits exist; the `:free` routes cost $0 so
     # the bot keeps answering even when the account balance is exhausted.
+    # Order matters: nvidia/nemotron-3-ultra-550b-a55b:free is a proven tool
+    # caller, so it sits before the smaller/weaker free routes.
     llm_fallback_models: list[str] = Field(
         default_factory=lambda: [
             "openai/gpt-4o-mini",
             "google/gemma-4-31b-it:free",
             "nvidia/nemotron-3-ultra-550b-a55b:free",
-            "nvidia/nemotron-3-super-120b-a12b:free",
             "google/gemma-4-26b-a4b-it:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
             "nvidia/nemotron-nano-9b-v2:free",
         ]
     )
@@ -69,6 +71,10 @@ class Settings(BaseSettings):
     llm_free_min_completion: int = 600
     # How long a model that fails (402/400/404/429/empty) is skipped across turns.
     llm_model_skip_seconds: int = 600
+    # Rate-limit (429) models recover in seconds, not minutes: a short penalty
+    # keeps the primary engine in play under bursty traffic instead of banishing
+    # it for the full skip window.
+    llm_rate_limit_skip_seconds: int = 60
     # How often the free-model catalogue is re-fetched.
     llm_models_refresh_seconds: int = 21_600
     openrouter_api_key: str | None = Field(default=None, repr=False)

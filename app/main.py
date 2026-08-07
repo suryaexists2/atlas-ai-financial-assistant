@@ -156,6 +156,7 @@ def _build_chat_gateway(settings: Settings):
             max_retries=settings.llm_max_retries,
             fallback_models=[settings.groq_llm_fallback],
             skip_seconds=settings.llm_model_skip_seconds,
+            rate_limit_skip_seconds=settings.llm_rate_limit_skip_seconds,
         )
 
     openrouter_gateway = None
@@ -167,6 +168,7 @@ def _build_chat_gateway(settings: Settings):
             max_retries=settings.llm_max_retries,
             fallback_models=settings.llm_fallback_models,
             skip_seconds=settings.llm_model_skip_seconds,
+            rate_limit_skip_seconds=settings.llm_rate_limit_skip_seconds,
             registry=_llm_registry(settings),
         )
 

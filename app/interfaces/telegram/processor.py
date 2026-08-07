@@ -9,6 +9,7 @@ through the outbox. It never talks to the Telegram API directly.
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -16,6 +17,7 @@ from typing import Any, Awaitable, Callable
 from aiogram import types
 
 from app.application import conversation as conversation_service
+from app.application.agent.tools import DEFAULT_TOOLS
 from app.application.ingestion.types import MediaIngestionResult
 from app.core.logging import get_logger
 from app.domain.enums import DocumentStatus, MessageRole
@@ -177,6 +179,7 @@ class UpdateProcessor:
             logger.exception("reply_composer_failed", update_id=message.update_id)
 
         reply_text = reply_text or self._fallback_reply
+        reply_text = self._clean_reply(reply_text)
         if reply_text:
             payload: dict[str, Any] = {
                 "type": "text",
@@ -203,6 +206,17 @@ class UpdateProcessor:
                     correlation_id=message.correlation_id,
                 )
             logger.info("reply_enqueued", update_id=message.update_id)
+
+    # Tool names that leak into generated text as "(tool_name)" artifacts —
+    # stripped so replies never look like a script dump.
+    _LEAKED_TOOL_PATTERN = re.compile(
+        r"\(\s*(" + "|".join(re.escape(t.name) for t in DEFAULT_TOOLS) + r")\s*\)",
+        re.IGNORECASE,
+    )
+
+    def _clean_reply(self, text: str) -> str:
+        cleaned = self._LEAKED_TOOL_PATTERN.sub("", text)
+        return re.sub(r"\s{2,}", " ", cleaned).strip()
 
     async def _ingest_media(
         self,

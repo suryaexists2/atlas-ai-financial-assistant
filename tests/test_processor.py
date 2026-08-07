@@ -185,3 +185,14 @@ async def test_composer_none_still_enqueues_fallback(session_factory):
         outbound = result.scalars().all()
         assert len(outbound) == 1
         assert outbound[0].payload["text"] == "custom fallback"
+
+
+def test_leaked_tool_names_stripped_from_reply():
+    processor = make_processor(None)
+    assert processor._clean_reply("Let me check. (get_market_quote) Here is the price") == (
+        "Let me check. Here is the price"
+    )
+    assert processor._clean_reply("(get_market_news) He") == "He"
+    assert processor._clean_reply("Plain text (AAPL) stays (not a tool)") == (
+        "Plain text (AAPL) stays (not a tool)"
+    )

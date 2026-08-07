@@ -491,3 +491,57 @@ async def test_failover_raises_when_both_fail():
     assert "backup exploded" in str(exc_info.value)
     assert primary.calls == 1
     assert backup.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_429_gets_short_skip_not_full_window():
+    requested_models: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requested_models.append(body["model"])
+        if body["model"] == "model-x":
+            return httpx.Response(429, text="rate limited")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    gateway = OpenRouterGateway(
+        "test-key",
+        "model-x",
+        max_retries=1,
+        fallback_models=["fallback-a"],
+        http=http,
+        skip_seconds=600,
+        rate_limit_skip_seconds=60,
+    )
+    first = await gateway.complete([{"role": "user", "content": "hi"}])
+    assert first.content == "ok"
+    assert requested_models == ["model-x", "model-x", "fallback-a"]
+    penalty = gateway._skip_until["model-x"] - time.monotonic()
+    assert 0 < penalty <= 61
+    await gateway.complete([{"role": "user", "content": "hi"}])
+    assert requested_models == ["model-x", "model-x", "fallback-a", "fallback-a"]
+
+
+@pytest.mark.asyncio
+async def test_404_uses_full_skip_window():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="model not found")
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    gateway = OpenRouterGateway(
+        "test-key",
+        "model-x",
+        max_retries=1,
+        fallback_models=["fallback-a"],
+        http=http,
+        skip_seconds=600,
+        rate_limit_skip_seconds=60,
+    )
+    with pytest.raises(LLMGatewayError):
+        await gateway.complete([{"role": "user", "content": "hi"}])
+    penalty = gateway._skip_until["model-x"] - time.monotonic()
+    assert penalty > 590
