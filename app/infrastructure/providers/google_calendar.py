@@ -94,7 +94,8 @@ class CalendarClient:
             raise GoogleTokenExpiredError()
         if response.status_code != 200:
             raise GoogleApiError(
-                f"Calendar API error ({response.status_code})", status=response.status_code
+                f"Calendar API error ({response.status_code}): {response.text[:200]}",
+                status=response.status_code,
             )
         return response.json()
 
@@ -115,7 +116,8 @@ class CalendarClient:
             raise GoogleTokenExpiredError()
         if response.status_code >= 300:
             raise GoogleApiError(
-                f"Calendar API error ({response.status_code})", status=response.status_code
+                f"Calendar API error ({response.status_code}): {response.text[:200]}",
+                status=response.status_code,
             )
         return response.json()
 

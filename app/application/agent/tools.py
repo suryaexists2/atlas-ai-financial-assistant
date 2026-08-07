@@ -580,7 +580,8 @@ def _google_failure(exc: Exception) -> str:
             )
         return json.dumps({"error": "Google sign-in is not available right now"})
     if isinstance(exc, GoogleApiError):
-        return json.dumps({"error": f"Google API error: {exc}"})
+        detail = f" ({exc.status})" if exc.status else ""
+        return json.dumps({"error": f"Google API error{detail}: {exc}"})
     return json.dumps({"error": f"A Google connector error occurred ({type(exc).__name__}: {exc})"})
 
 
