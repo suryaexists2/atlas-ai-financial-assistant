@@ -541,6 +541,53 @@ async def test_schedule_meeting_creates_event(uow, demo_user):
 
 
 @pytest.mark.asyncio
+async def test_schedule_meeting_normalizes_object_attendees(uow, demo_user):
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        captured["attendees"] = body.get("attendees")
+        return httpx.Response(
+            200,
+            json={
+                "id": "ev2",
+                "summary": body["summary"],
+                "start": {"dateTime": body["start"]["dateTime"]},
+                "end": {"dateTime": body["end"]["dateTime"]},
+                "htmlLink": "https://calendar.google.com/event?eid=ev2",
+            },
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    async with uow:
+        await uow.integrations.upsert(
+            demo_user["user_id"],
+            provider=IntegrationProvider.CALENDAR,
+            access_token="tok",
+            scopes=["calendar.events"],
+            expires_at=dt.datetime.now(dt.UTC) + dt.timedelta(hours=1),
+        )
+        await uow.commit()
+    ctx = ToolContext(
+        uow=uow, user_id=demo_user["user_id"], google_oauth=oauth_client(http), google_http=http
+    )
+    # The model may emit Google's native shape: a list of {email: ...} objects.
+    result = json.loads(
+        await default_registry().execute(
+            ctx,
+            "schedule_meeting",
+            {
+                "summary": "Team sync",
+                "when": "tomorrow 10:30",
+                "attendees": [{"email": "a@b.com"}, {"email": "c@d.com"}],
+            },
+        )
+    )
+    assert result["event_id"] == "ev2"
+    assert captured["attendees"] == [{"email": "a@b.com"}, {"email": "c@d.com"}]
+
+
+@pytest.mark.asyncio
 async def test_read_drive_doc_uses_pipeline(uow, demo_user):
     class FakePipeline:
         async def process(self, *, file_id, mime_type, filename, data=None):

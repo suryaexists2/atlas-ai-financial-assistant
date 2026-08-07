@@ -721,8 +721,20 @@ async def _schedule_meeting(ctx: ToolContext, args: dict[str, Any]) -> str:
     start, end = parsed
     raw_attendees = args.get("attendees") or []
     if isinstance(raw_attendees, str):
-        raw_attendees = [raw_attendees]
-    attendees = [str(a).strip() for a in raw_attendees if str(a).strip()]
+        if raw_attendees.strip():
+            try:
+                raw_attendees = json.loads(raw_attendees)
+            except (json.JSONDecodeError, TypeError):
+                raw_attendees = [raw_attendees]
+        else:
+            raw_attendees = []
+    attendees = []
+    for a in raw_attendees:
+        if isinstance(a, dict):
+            a = a.get("email") or a.get("value") or ""
+        a = str(a).strip()
+        if a:
+            attendees.append(a)
 
     async def run(token: str) -> str:
         calendar = CalendarClient(token, http=ctx.google_http)
