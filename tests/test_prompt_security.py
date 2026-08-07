@@ -49,7 +49,8 @@ def test_exfiltration_guard_ignores_normal_questions():
 
 def test_system_prompt_forbids_tools_for_off_topic_chat():
     assert "NEVER call a tool for greetings, small talk, jokes" in SYSTEM_PROMPT
-    assert "respond warmly and naturally, no tools needed" in SYSTEM_PROMPT
+    assert "tell one (a finance pun is fine)" in SYSTEM_PROMPT
+    assert "Redirect WITHOUT tools only when" in SYSTEM_PROMPT
 
 
 def test_system_prompt_forbids_revealing_itself():
