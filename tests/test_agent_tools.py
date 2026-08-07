@@ -225,9 +225,7 @@ async def test_market_news_and_earnings_tools(uow, demo_user):
         if "news" in url:
             return httpx.Response(
                 200,
-                json=[
-                    {"headline": "Markets rally", "source": "Bloomberg", "url": "https://x"}
-                ],
+                json=[{"headline": "Markets rally", "source": "Bloomberg", "url": "https://x"}],
             )
         if "earnings" in url:
             return httpx.Response(
@@ -312,7 +310,7 @@ async def test_link_and_read_google_sheet(uow, demo_user):
     from app.infrastructure.providers.google_sheets import GoogleSheetsClient
 
     SHEET_URL = "https://docs.google.com/spreadsheets/d/abc123XYZuvw45/edit"
-    CSV = 'ticker,qty\nAAPL,100\nTSLA,50\n'
+    CSV = "ticker,qty\nAAPL,100\nTSLA,50\n"
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert "/abc123XYZuvw45/gviz/tq" in str(request.url)
@@ -324,9 +322,7 @@ async def test_link_and_read_google_sheet(uow, demo_user):
 
     async with uow:
         ctx = ToolContext(uow=uow, user_id=demo_user["user_id"], google_sheets=sheets)
-        linked = json.loads(
-            await registry.execute(ctx, "link_google_sheet", {"url": SHEET_URL})
-        )
+        linked = json.loads(await registry.execute(ctx, "link_google_sheet", {"url": SHEET_URL}))
         assert "linked" in linked["message"]
 
     async with uow:

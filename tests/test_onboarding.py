@@ -99,9 +99,7 @@ async def test_completed_profile_stays_completed(uow):
     async with uow:
         user_id = await make_user(uow)
         engine = OnboardingEngine()
-        await uow.profiles.set_onboarding(
-            user_id, OnboardingStatus.COMPLETED, {"step": "done"}
-        )
+        await uow.profiles.set_onboarding(user_id, OnboardingStatus.COMPLETED, {"step": "done"})
         await uow.commit()
         reply = await engine.turn(uow, user_id=user_id, text="what about Google?")
         assert reply.completed

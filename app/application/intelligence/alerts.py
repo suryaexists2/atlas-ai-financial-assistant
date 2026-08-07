@@ -99,8 +99,7 @@ async def run_filing_alerts(uow: UnitOfWork, job, ctx: IntelligenceContext) -> N
         await _fire(
             uow,
             alert,
-            f"📄 {alert.symbol} filed {new_filing['form']} on "
-            f"{new_filing.get('filed_on') or '–'}",
+            f"📄 {alert.symbol} filed {new_filing['form']} on {new_filing.get('filed_on') or '–'}",
         )
         fired += 1
     if fired:
@@ -144,9 +143,7 @@ def _matching_headline(
     return None
 
 
-def _new_filing(
-    filings: list[dict[str, Any]], since: dt.datetime | None
-) -> dict[str, Any] | None:
+def _new_filing(filings: list[dict[str, Any]], since: dt.datetime | None) -> dict[str, Any] | None:
     for filing in filings:
         filed_on = filing.get("filed_on")
         if since is not None and since.tzinfo is None:

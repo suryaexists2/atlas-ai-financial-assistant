@@ -95,9 +95,7 @@ async def test_scheduler_runs_never_scheduled_job_immediately(session_factory, d
 
     maker = async_sessionmaker(bind=db_engine)
     async with maker() as session:
-        session.add(
-            ScheduledJob(job_type="price_alerts", cron_expr="*/15 * * * *")
-        )
+        session.add(ScheduledJob(job_type="price_alerts", cron_expr="*/15 * * * *"))
         await session.commit()
 
     called: list[str] = []
@@ -111,15 +109,50 @@ async def test_scheduler_runs_never_scheduled_job_immediately(session_factory, d
 
     # after the immediate run the job gets a real next_run_at on the boundary
     async with maker() as session:
-        job = (await session.execute(
-            select(ScheduledJob).where(ScheduledJob.job_type == "price_alerts")
-        )).scalar_one()
+        job = (
+            await session.execute(
+                select(ScheduledJob).where(ScheduledJob.job_type == "price_alerts")
+            )
+        ).scalar_one()
         assert job.last_run_at is not None
         assert job.next_run_at is not None
         assert job.next_run_at.replace(tzinfo=dt.UTC) > fake_now()
 
     # already covered occurrence does not re-fire
     assert await worker.sweep_once() == 0
+
+
+async def test_misfired_job_recovers_to_next_boundary(session_factory, db_engine):
+    """A job that missed its window (e.g. instance was asleep) must advance to
+    its next fire time instead of staying permanently misfired."""
+    from app.domain.entities import ScheduledJob
+    from app.infrastructure.db.session import async_sessionmaker
+
+    def fake_now():
+        return dt.datetime(2026, 8, 7, 3, 30, 0, tzinfo=dt.UTC)
+
+    maker = async_sessionmaker(bind=db_engine)
+    async with maker() as session:
+        session.add(
+            ScheduledJob(
+                job_type="news_alerts",
+                cron_expr="*/30 * * * *",
+                next_run_at=fake_now() - dt.timedelta(minutes=40),
+            )
+        )
+        await session.commit()
+
+    worker = SchedulerWorker(maker, JobRunner({}), now_fn=fake_now)
+    assert await worker.sweep_once() == 0
+
+    async with maker() as session:
+        job = (
+            await session.execute(
+                select(ScheduledJob).where(ScheduledJob.job_type == "news_alerts")
+            )
+        ).scalar_one()
+        assert job.next_run_at is not None
+        assert job.next_run_at.replace(tzinfo=dt.UTC) > fake_now()
 
 
 def test_runner_has_types():

@@ -10,20 +10,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime as dt
-import logging
 from typing import Any, Awaitable, Callable, Protocol
 
 from app.application.scheduling.cron import UTC, compute_next_run
+from app.core.logging import get_logger
 from app.infrastructure.db.session import async_sessionmaker
 from app.infrastructure.db.uow import UnitOfWork
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class JobHandler(Protocol):
-    async def __call__(
-        self, uow: UnitOfWork, job: Any, context: Any
-    ) -> None: ...
+    async def __call__(self, uow: UnitOfWork, job: Any, context: Any) -> None: ...
 
 
 class JobRunner:
@@ -117,13 +115,16 @@ class SchedulerWorker:
                         job_type=job.job_type,
                         scheduled=next_run.isoformat(),
                     )
+                    # Recover: advance this job to its next boundary so it keeps
+                    # cycling instead of limping forever on a stale next_run_at.
+                    following = compute_next_run(job.cron_expr, after=now)
+                    if following is not None:
+                        job.next_run_at = following.replace(tzinfo=None)
                     continue
                 # Idempotency: only the first claim of this fire time runs it.
                 run_key = f"run@{next_run:%Y%m%dT%H%M%S}"
                 stored_at = next_run.astimezone(UTC).replace(tzinfo=None)
-                claimed = await uow.jobs.record_run(
-                    job.id, run_key=run_key, scheduled_at=stored_at
-                )
+                claimed = await uow.jobs.record_run(job.id, run_key=run_key, scheduled_at=stored_at)
                 if claimed:
                     if self._runner.has(job.job_type):
                         try:

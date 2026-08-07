@@ -292,13 +292,9 @@ async def _create_price_alert(ctx: ToolContext, args: dict[str, Any]) -> str:
     }
     if args.get("direction"):
         condition["direction"] = str(args.get("direction"))
-    await ctx.alerts.create(
-        ctx.user_id, kind=AlertKind.PRICE, symbol=symbol, condition=condition
-    )
+    await ctx.alerts.create(ctx.user_id, kind=AlertKind.PRICE, symbol=symbol, condition=condition)
     await ctx.uow.commit()
-    return json.dumps(
-        {"message": f"created a {percent:g}% price alert for {symbol}"}
-    )
+    return json.dumps({"message": f"created a {percent:g}% price alert for {symbol}"})
 
 
 async def _create_news_alert(ctx: ToolContext, args: dict[str, Any]) -> str:
@@ -360,11 +356,14 @@ async def _create_daily_briefing(ctx: ToolContext, args: dict[str, Any]) -> str:
         return json.dumps({"message": "a daily briefing is already scheduled"})
     user = await ctx.user.get_by_id(ctx.user_id)
     tz = user.timezone if user is not None else None
+    scope = str(args.get("scope") or "watchlist").lower()
+    if scope not in {"watchlist", "interests", "both"}:
+        scope = "watchlist"
     await ctx.jobs.create(
         job_type="daily_brief",
         cron_expr=cron_from_local_time(time, tz),
         user_id=ctx.user_id,
-        params={"scope": "watchlist"},
+        params={"scope": scope},
         timezone=(tz or "UTC"),
     )
     await ctx.profiles.upsert(ctx.user_id, briefing_time=extract_clock_time(time))
@@ -448,9 +447,7 @@ async def _read_google_sheet(ctx: ToolContext, args: dict[str, Any]) -> str:
 
     url = str(args.get("url") or "").strip()
     if not url:
-        link = await ctx.integrations.get_by_provider(
-            ctx.user_id, IntegrationProvider.SHEETS
-        )
+        link = await ctx.integrations.get_by_provider(ctx.user_id, IntegrationProvider.SHEETS)
         if link is not None:
             url = link.access_token
     if not url:
@@ -473,9 +470,7 @@ async def _read_google_sheet(ctx: ToolContext, args: dict[str, Any]) -> str:
         return json.dumps({"error": str(exc)})
     if not rows:
         return json.dumps({"error": "that sheet returned no rows", "sheet_id": sheet_id})
-    return json.dumps(
-        {"sheet_id": sheet_id, "row_count": len(rows), "rows": rows[:20]}
-    )
+    return json.dumps({"sheet_id": sheet_id, "row_count": len(rows), "rows": rows[:20]})
 
 
 DEFAULT_TOOLS: list[Tool] = [
@@ -652,9 +647,16 @@ DEFAULT_TOOLS: list[Tool] = [
         name="create_daily_briefing",
         description=(
             "Schedule (or reschedule) the user's daily morning briefing. "
-            "Pass a 24h local time like '08:00'."
+            "Pass a 24h local time like '08:00'. scope: watchlist (default), "
+            "interests (topics like AI/semiconductors/tech), or both."
         ),
-        parameters={"time": {"type": "string", "description": "HH:MM local time, default 08:00"}},
+        parameters={
+            "time": {"type": "string", "description": "HH:MM local time, default 08:00"},
+            "scope": {
+                "type": "string",
+                "description": "watchlist|interests|both, default watchlist",
+            },
+        },
         handler=_create_daily_briefing,
     ),
     Tool(

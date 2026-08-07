@@ -41,9 +41,7 @@ class GoogleSheetsClient:
                 "standard /spreadsheets/d/<id>/edit share link."
             )
 
-        target = (
-            f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv"
-        )
+        target = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv"
         try:
             response = await self._http.get(target, headers={"User-Agent": _UA})
         except httpx.HTTPError as exc:

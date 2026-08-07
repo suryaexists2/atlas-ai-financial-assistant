@@ -12,7 +12,12 @@ from app.application.intelligence.alerts import (
     run_news_alerts,
     run_price_alerts,
 )
-from app.application.intelligence.briefing import _build_data_block, _deterministic_summary
+from app.application.intelligence.briefing import (
+    _build_data_block,
+    _deterministic_summary,
+    _gather_interests,
+    _match_interest_news,
+)
 from app.application.intelligence.jobs import ensure_cycle_jobs
 from app.application.intelligence.reminders import fire_reminder
 from app.domain.enums import AlertKind
@@ -60,6 +65,42 @@ def test_deterministic_summary_has_watchlist():
     assert "MSFT" in _deterministic_summary([item()], quotes, [])
 
 
+def test_deterministic_summary_interest_section():
+    interest_news = [{"headline": "Semiconductors rally on AI demand"}]
+    summary = _deterministic_summary([], [], [], ["ai", "semiconductors"], interest_news)
+    assert "Your topics (ai, semiconductors)" in summary
+    assert "Semiconductors rally on AI demand" in summary
+
+
+def test_match_interest_news_filters_by_keywords():
+    news = [
+        {"headline": "AI model race heats up", "summary": ""},
+        {"headline": "Bank earnings beat", "summary": ""},
+        {"headline": "Chipmakers expand capacity", "summary": "semiconductor capex rises"},
+    ]
+    matched = _match_interest_news(news, ["AI", "semiconductor"])
+    headlines = [n["headline"] for n in matched]
+    assert headlines == ["AI model race heats up", "Chipmakers expand capacity"]
+
+
+async def test_gather_interests_from_profile_and_memory(session_factory, uow):
+    async with uow:
+        user = await uow.users.create(telegram_id=2001, username="interest_user")
+        await uow.profiles.upsert(user.id, interests=["AI", "technology"])
+        await uow.memories.upsert_observation(
+            user.id,
+            memory_key="user_interests",
+            value={"interests": ["macro", "AI"]},
+            summary="interests",
+            confidence=0.9,
+        )
+        await uow.commit()
+
+    async with uow:
+        topics = await _gather_interests(uow, user.id)
+        assert topics == ["AI", "technology", "macro"]
+
+
 async def test_price_alert_fires_once_then_cooldowns(session_factory, uow):
     async with uow:
         user = await uow.users.create(telegram_id=1001, username="price_user")
@@ -69,6 +110,7 @@ async def test_price_alert_fires_once_then_cooldowns(session_factory, uow):
         await uow.commit()
 
     async with uow:
+
         class FakeFinnhub:
             async def quote(self, symbol):
                 return {"price": 210.0, "d": 10.0, "dp": 5.5, "pc": 199.0}
@@ -96,6 +138,7 @@ async def test_news_alert_keyword_fires(session_factory, uow):
         await uow.commit()
 
     async with uow:
+
         class FakeFinnhub:
             async def company_news(self, symbol, limit=5):
                 return [{"headline": "Tesla unveils robotaxi fleet", "datetime": 1720000000}]
@@ -113,6 +156,7 @@ async def test_filing_alert_fires_on_sec(session_factory, uow):
         await uow.commit()
 
     async with uow:
+
         class FakeSec:
             async def recent_filings(self, symbol, form_types=None, limit=10):
                 return [{"form": "10-Q", "filed_on": "2026-08-06"}]

@@ -121,10 +121,10 @@ _BRIEFING_THEN = (
 _DONE = (
     "You're all set{name}.\n\n"
     "You can ask things like:\n"
-    "• \"What moved the market today?\"\n"
-    "• \"Summarize Apple's latest earnings.\"\n"
-    "• \"What's in this PDF?\"  (just upload it)\n"
-    "• \"Watch NVIDIA and notify me on SEC filings.\"\n\n"
+    '• "What moved the market today?"\n'
+    '• "Summarize Apple\'s latest earnings."\n'
+    '• "What\'s in this PDF?"  (just upload it)\n'
+    '• "Watch NVIDIA and notify me on SEC filings."\n\n'
     "I'll send your {brief}."
 )
 
@@ -268,7 +268,7 @@ class OnboardingEngine:
             job_type="daily_brief",
             cron_expr=f"{int(minute)} {int(hour)} * * *",
             user_id=user_id,
-            params={"scope": "watchlist"},
+            params={"scope": "both"},
             timezone="UTC",
         )
 

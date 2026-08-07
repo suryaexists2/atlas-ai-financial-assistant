@@ -42,9 +42,7 @@ def cron_from_local_time(time: str, tz_name: str | None = None) -> str:
     hour, sep, minute = time.partition(":")
     if not sep:
         return f"0 {int(hour or 0)} * * *"
-    local_dt = dt.datetime.combine(
-        dt.date(2026, 1, 1), dt.time(int(hour), int(minute))
-    )
+    local_dt = dt.datetime.combine(dt.date(2026, 1, 1), dt.time(int(hour), int(minute)))
     tz: Any = UTC
     if tz_name:
         try:
