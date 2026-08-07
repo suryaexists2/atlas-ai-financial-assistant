@@ -251,6 +251,60 @@ class SqlOutboxRepository(OutboxRepository):
         await self.session.flush()
         return message
 
+    def _status_filter(self, *, terminal: bool = False) -> Any:
+        kind = OutboundMessage.payload.op("->>")("type") == "status"
+        if terminal:
+            return kind
+        return kind & (OutboundMessage.status == OutboundStatus.PENDING)
+
+    async def get_sent_status(self, correlation_id: str) -> OutboundMessage | None:
+        """The delivered status message for a correlation, if any."""
+        result = await self.session.execute(
+            select(OutboundMessage)
+            .where(
+                OutboundMessage.payload.op("->>")("type") == "status",
+                OutboundMessage.payload.op("->>")("correlation_id") == correlation_id,
+                OutboundMessage.payload.op("->>")("telegram_message_id") != None,  # noqa: E711
+                OutboundMessage.status == OutboundStatus.SENT,
+            )
+            .order_by(OutboundMessage.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def supersede_statuses(self, correlation_id: str) -> None:
+        """Cancel any still-pending status rows for a correlation so a stale
+        "thinking" message can never arrive after the final reply."""
+        rows = await self.session.execute(
+            select(OutboundMessage).where(
+                OutboundMessage.payload.op("->>")("type") == "status",
+                OutboundMessage.payload.op("->>")("correlation_id") == correlation_id,
+                OutboundMessage.status == OutboundStatus.PENDING,
+            )
+        )
+        for row in rows.scalars().all():
+            row.status = OutboundStatus.FAILED
+            row.last_error = "superseded by final reply"
+        await self.session.flush()
+
+    async def expire_statuses(
+        self, older_than: dt.datetime, limit: int = 20
+    ) -> list[OutboundMessage]:
+        """Pending or sent status rows older than the TTL, for cleanup."""
+        result = await self.session.execute(
+            select(OutboundMessage)
+            .where(
+                OutboundMessage.payload.op("->>")("type") == "status",
+                OutboundMessage.status.in_(
+                    [OutboundStatus.PENDING, OutboundStatus.SENT]
+                ),
+                OutboundMessage.created_at < older_than,
+            )
+            .order_by(OutboundMessage.created_at.asc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
 
 class SqlDocumentRepository(DocumentRepository):
     def __init__(self, session: AsyncSession) -> None:

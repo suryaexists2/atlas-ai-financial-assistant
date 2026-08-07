@@ -42,9 +42,15 @@ async def test_text_message_processed_end_to_end(session_factory):
 
         result = await uow.session.execute(select(OutboundMessage))
         outbound = result.scalars().all()
-        assert len(outbound) == 1
-        assert outbound[0].payload["text"] == "echo:hello"
-        assert outbound[0].priority == 10
+        assert len(outbound) == 2  # status bubble + final reply
+        text_rows = [o for o in outbound if o.payload.get("type") != "status"]
+        status_rows = [o for o in outbound if o.payload.get("type") == "status"]
+        assert len(text_rows) == 1
+        assert len(status_rows) == 1
+        assert text_rows[0].payload["text"] == "echo:hello"
+        assert text_rows[0].priority == 10
+        assert status_rows[0].priority == 100
+        assert status_rows[0].payload["correlation_id"] == "c-1"
 
 
 @pytest.mark.asyncio
@@ -62,7 +68,7 @@ async def test_duplicate_update_id_is_dropped(session_factory):
         messages = await uow.conversations.list_messages(convos[0].id)
         assert len(messages) == 2  # user + assistant reply, both stored once
         result = await uow.session.execute(select(func.count()).select_from(OutboundMessage))
-        assert result.scalar_one() == 1  # replied exactly once
+        assert result.scalar_one() == 2  # status bubble + reply, each exactly once
 
 
 @pytest.mark.asyncio
@@ -163,9 +169,10 @@ async def test_composer_failure_still_enqueues_fallback(session_factory):
         assert len(await uow.conversations.list_messages(convos[0].id)) == 1
         result = await uow.session.execute(select(OutboundMessage))
         outbound = result.scalars().all()
-        assert len(outbound) == 1
+        text_rows = [o for o in outbound if o.payload.get("type") != "status"]
+        assert len(text_rows) == 1
         assert (
-            outbound[0].payload["text"]
+            text_rows[0].payload["text"]
             == UpdateProcessor(session_factory, _compose)._fallback_reply
         )
 
@@ -184,8 +191,9 @@ async def test_composer_none_still_enqueues_fallback(session_factory):
     async with uow:
         result = await uow.session.execute(select(OutboundMessage))
         outbound = result.scalars().all()
-        assert len(outbound) == 1
-        assert outbound[0].payload["text"] == "custom fallback"
+        text_rows = [o for o in outbound if o.payload.get("type") != "status"]
+        assert len(text_rows) == 1
+        assert text_rows[0].payload["text"] == "custom fallback"
 
 
 def test_leaked_tool_names_stripped_from_reply():
@@ -212,6 +220,64 @@ async def test_leaky_composer_reply_is_sanitized_before_outbox(session_factory):
     async with uow:
         result = await uow.session.execute(select(OutboundMessage))
         outbound = result.scalars().all()
-        assert len(outbound) == 1
-        assert "get_market_quote" not in outbound[0].payload["text"]
-        assert outbound[0].payload["text"] == "Nvidia is at $218.99 today."
+        text_rows = [o for o in outbound if o.payload.get("type") != "status"]
+        assert len(text_rows) == 1
+        assert "get_market_quote" not in text_rows[0].payload["text"]
+        assert text_rows[0].payload["text"] == "Nvidia is at $218.99 today."
+
+
+def test_status_text_is_context_aware():
+    from app.interfaces.telegram.normalized import NormalizedMessage
+    from app.interfaces.telegram.processor import status_text_for
+
+    def msg(text=None, media_type=None):
+        return NormalizedMessage(
+            update_id=1,
+            chat_id=1,
+            telegram_user_id=1,
+            message_id=1,
+            text=text,
+            media_type=media_type,
+            correlation_id="c",
+            source="test",
+        )
+
+    assert status_text_for(msg("What is NVDA trading at?")) == (
+        "🔎 Checking the latest market data..."
+    )
+    assert status_text_for(msg("connect my gmail")) == (
+        "🔗 Checking your connected Google account..."
+    )
+    assert status_text_for(msg("hi")) == "⏳ Atlas is thinking..."
+    assert status_text_for(msg(media_type="voice")) == "🎙️ Transcribing your voice note..."
+    assert status_text_for(msg(media_type="document")) == "📄 Analyzing your document..."
+    assert status_text_for(msg(media_type="image")) == "🔎 Looking that up..."
+
+
+@pytest.mark.asyncio
+async def test_status_enqueued_before_final_and_disabled_flag(session_factory):
+    processor = make_processor(session_factory)
+    payload = tg_text_update(update_id=88, chat_id=777, message_id=81, text="TSLA price?")
+    await processor.process_update(payload, source="webhook", correlation_id="c-10")
+
+    uow = UnitOfWork(session_factory)
+    async with uow:
+        result = await uow.session.execute(select(OutboundMessage))
+        rows = result.scalars().all()
+        statuses = [r for r in rows if r.payload.get("type") == "status"]
+        assert len(statuses) == 1
+        assert statuses[0].priority == 100
+        assert statuses[0].created_at <= rows[-1].created_at
+
+    quiet = UpdateProcessor(session_factory, _compose, status_enabled=False)
+    await quiet.process_update(
+        tg_text_update(update_id=89, chat_id=777, message_id=82, text="hi"),
+        source="webhook",
+        correlation_id="c-11",
+    )
+    uow = UnitOfWork(session_factory)
+    async with uow:
+        result = await uow.session.execute(select(OutboundMessage))
+        rows = result.scalars().all()
+        statuses = [r for r in rows if r.payload.get("type") == "status"]
+        assert len(statuses) == 1  # only the c-10 one

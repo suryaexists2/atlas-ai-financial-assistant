@@ -96,3 +96,62 @@ async def test_backoff_caps_at_max_delay():
     delay = sender._backoff(attempt=10, retry_after=None)
     assert 10 <= delay <= 11  # exponential capped at 10; jitter adds up to 1.0
     assert sender._backoff(attempt=1, retry_after=3) == 3
+
+
+@pytest.mark.asyncio
+async def test_capture_message_id_returns_id():
+    api = AsyncMock()
+    api.send_message.return_value = {"message_id": 42}
+    sender = TelegramSender(api, make_limiter())
+
+    result = await sender.send(chat_id=111, payload=payload(), capture_message_id=True)
+
+    assert result == 42
+    api.send_message.assert_awaited_once_with(chat_id=111, text="hi")
+
+
+@pytest.mark.asyncio
+async def test_capture_message_id_missing_returns_true():
+    api = AsyncMock(return_value={})
+    sender = TelegramSender(api, make_limiter())
+
+    assert await sender.send(chat_id=111, payload=payload(), capture_message_id=True) is True
+
+
+@pytest.mark.asyncio
+async def test_capture_message_id_failure_returns_false():
+    api = AsyncMock()
+    api.send_message.side_effect = TelegramApiError("forbidden")
+    sender = TelegramSender(api, make_limiter())
+
+    assert await sender.send(chat_id=111, payload=payload(), capture_message_id=True) is False
+
+
+@pytest.mark.asyncio
+async def test_delete_message_success():
+    api = AsyncMock()
+    sender = TelegramSender(api, make_limiter())
+
+    assert await sender.delete_message(chat_id=111, message_id=42) is True
+    api.delete_message.assert_awaited_once_with(chat_id=111, message_id=42)
+
+
+@pytest.mark.asyncio
+async def test_delete_message_already_gone_is_success():
+    api = AsyncMock()
+    api.delete_message.side_effect = TelegramApiError("message to delete not found")
+    sender = TelegramSender(api, make_limiter())
+
+    assert await sender.delete_message(chat_id=111, message_id=42) is True
+
+
+@pytest.mark.asyncio
+async def test_delete_message_retries_then_gives_up():
+    api = AsyncMock()
+    api.delete_message.side_effect = RetryableTelegramError("flood", retry_after=0.001)
+    sender = TelegramSender(
+        api, make_limiter(), max_attempts=3, base_delay_seconds=0.001, max_delay_seconds=0.01
+    )
+
+    assert await sender.delete_message(chat_id=111, message_id=42) is False
+    assert api.delete_message.await_count == 3

@@ -228,6 +228,17 @@ class OutboxRepository(abc.ABC):
         self, message: OutboundMessage, *, error: str, next_retry_at: dt.datetime | None
     ) -> OutboundMessage: ...
 
+    @abc.abstractmethod
+    async def get_sent_status(self, correlation_id: str) -> OutboundMessage | None: ...
+
+    @abc.abstractmethod
+    async def supersede_statuses(self, correlation_id: str) -> None: ...
+
+    @abc.abstractmethod
+    async def expire_statuses(
+        self, older_than: dt.datetime, limit: int = 20
+    ) -> list[OutboundMessage]: ...
+
 
 class IntegrationRepository(abc.ABC):
     @abc.abstractmethod

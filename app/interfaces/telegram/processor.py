@@ -9,6 +9,7 @@ through the outbox. It never talks to the Telegram API directly.
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -55,6 +56,30 @@ _KIND_LABEL = {
 }
 
 
+# Context-aware temporary status shown while the reply is being composed.
+_STATUS_GOOGLE_RE = re.compile(r"(?i)\b(?:google|gmail|calendar|drive|sheet|meeting|email)\b")
+_STATUS_MARKET_RE = re.compile(
+    r"(?i)\b(?:quote|price|stock|stocks|market|trading|ticker|earnings|filing|filings|"
+    r"index|indices|nifty|sensex)\b|\$"
+)
+
+
+def status_text_for(message: NormalizedMessage) -> str:
+    """Pick the status bubble text based on what the user just sent."""
+    if message.is_media:
+        if message.media_type == "voice":
+            return "🎙️ Transcribing your voice note..."
+        if message.media_type == "document":
+            return "📄 Analyzing your document..."
+        return "🔎 Looking that up..."
+    text = message.combined_text or ""
+    if _STATUS_GOOGLE_RE.search(text):
+        return "🔗 Checking your connected Google account..."
+    if _STATUS_MARKET_RE.search(text):
+        return "🔎 Checking the latest market data..."
+    return "⏳ Atlas is thinking..."
+
+
 class UpdateProcessor:
     def __init__(
         self,
@@ -64,12 +89,14 @@ class UpdateProcessor:
         echo_mode: bool = True,
         fallback_reply: str = "Sorry — I hit a temporary hiccup. Give me a moment and try again.",
         media_ingestor: MediaIngestor | None = None,
+        status_enabled: bool = True,
     ) -> None:
         self._session_factory = session_factory
         self._reply_composer = reply_composer
         self._echo_mode = echo_mode
         self._fallback_reply = fallback_reply
         self._media_ingestor = media_ingestor
+        self._status_enabled = status_enabled
 
     async def process_update(
         self,
@@ -163,6 +190,18 @@ class UpdateProcessor:
     ) -> None:
         if not self._echo_mode:
             return
+        if self._status_enabled:
+            # Temporary "thinking" bubble, delivered by the outbox worker before
+            # the real reply lands (and deleted right before it is sent).
+            await uow.outbox.enqueue(
+                chat_id=message.chat_id,
+                payload={
+                    "type": "status",
+                    "correlation_id": message.correlation_id,
+                    "text": status_text_for(message),
+                },
+                priority=100,
+            )
         if message.is_media and message_id is not None:
             await self._ingest_media(uow, message, message_id)
         reply_text: str | None = None

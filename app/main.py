@@ -40,7 +40,13 @@ def _build_sender(settings: Settings, bot) -> TelegramSender:
     )
 
 
-def _build_worker(settings: Settings, session_factory, sender: TelegramSender) -> OutboxWorker:
+def _build_worker(
+    settings: Settings,
+    session_factory,
+    sender: TelegramSender,
+    *,
+    status_ttl_seconds: float = 600.0,
+) -> OutboxWorker:
     return OutboxWorker(
         session_factory,
         sender,
@@ -48,6 +54,7 @@ def _build_worker(settings: Settings, session_factory, sender: TelegramSender) -
         max_attempts=settings.outbox_max_attempts,
         retry_base_seconds=settings.outbox_retry_base_seconds,
         retry_max_seconds=settings.outbox_retry_max_seconds,
+        status_ttl_seconds=status_ttl_seconds,
     )
 
 
@@ -312,11 +319,13 @@ async def lifespan(app: FastAPI):
             echo_mode=True,  # echo_mode means "reply at all"; composer decides how
             fallback_reply=settings.agent_fallback_reply,
             media_ingestor=media_ingestor,
+            status_enabled=settings.outbox_status_enabled,
         )
         worker = _build_worker(
             settings,
             app.state.session_factory,
             _build_sender(settings, bot),
+            status_ttl_seconds=settings.outbox_status_ttl_seconds,
         )
         app.state.outbox_worker = worker
         worker.start()

@@ -38,8 +38,18 @@ class TelegramSender:
         self._base_delay = base_delay_seconds
         self._max_delay = max_delay_seconds
 
-    async def send(self, *, chat_id: int, payload: dict[str, Any]) -> bool:
-        """Attempts to deliver a payload. Returns True on success."""
+    async def send(
+        self,
+        *,
+        chat_id: int,
+        payload: dict[str, Any],
+        capture_message_id: bool = False,
+    ) -> bool | int | None:
+        """Attempts to deliver a payload.
+
+        Returns True on success (or the Telegram message_id when
+        `capture_message_id` is set), False on failure.
+        """
         message_type = payload.get("type", "text")
         text = payload.get("text")
         if message_type != "text" or text is None:
@@ -61,13 +71,17 @@ class TelegramSender:
                 kwargs: dict[str, Any] = {"chat_id": chat_id, "text": text}
                 if reply_markup is not None:
                     kwargs["reply_markup"] = reply_markup
-                await self._api.send_message(**kwargs)
+                sent = await self._api.send_message(**kwargs)
                 logger.info(
                     "telegram_sent",
                     chat_id=chat_id,
                     attempt=attempt,
                     correlation_id=payload.get("correlation_id"),
                 )
+                if capture_message_id and isinstance(sent, dict):
+                    message_id = sent.get("message_id")
+                    if isinstance(message_id, int):
+                        return message_id
                 return True
             except RetryableTelegramError as exc:
                 if attempt >= self._max_attempts:
@@ -84,6 +98,45 @@ class TelegramSender:
                 await asyncio.sleep(delay)
             except TelegramApiError as exc:
                 logger.warning("telegram_send_terminal", chat_id=chat_id, error=str(exc))
+                return False
+        return False
+
+    async def delete_message(self, *, chat_id: int, message_id: int) -> bool:
+        """Best-effort removal of a temporary status message. Returns True when
+        the message is gone (including "already not found")."""
+        attempt = 0
+        while attempt < self._max_attempts:
+            attempt += 1
+            await self._rate_limiter.acquire(chat_id)
+            try:
+                await self._api.delete_message(chat_id=chat_id, message_id=message_id)
+                logger.info(
+                    "telegram_status_deleted",
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    attempt=attempt,
+                )
+                return True
+            except RetryableTelegramError as exc:
+                if attempt >= self._max_attempts:
+                    return False
+                delay = self._backoff(attempt, exc.retry_after)
+                await asyncio.sleep(delay)
+            except TelegramApiError as exc:
+                message = str(exc).lower()
+                if "not found" in message:  # already gone = success (idempotent cleanup)
+                    logger.info(
+                        "telegram_status_already_gone",
+                        chat_id=chat_id,
+                        message_id=message_id,
+                    )
+                    return True
+                logger.warning(
+                    "telegram_status_delete_failed",
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    error=str(exc),
+                )
                 return False
         return False
 

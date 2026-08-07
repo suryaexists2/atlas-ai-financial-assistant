@@ -96,7 +96,9 @@ async def test_media_ingestor_exception_marks_document_failed(session_factory):
     uow = UnitOfWork(session_factory)
     async with uow:
         result = await uow.session.execute(select(OutboundMessage))
-        assert len(result.scalars().all()) == 1
+        rows = result.scalars().all()
+        assert len(rows) == 2  # status bubble + failure fallback reply
+        assert len([r for r in rows if r.payload.get("type") == "status"]) == 1
         user = await uow.users.get_by_telegram_id(888)
         docs = await uow.documents.list_for_user(user.id)
         assert len(docs) == 1

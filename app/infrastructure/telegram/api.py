@@ -45,6 +45,8 @@ class TelegramApiPort(Protocol):
         reply_markup: dict[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 
+    async def delete_message(self, *, chat_id: int, message_id: int) -> dict[str, Any]: ...
+
 
 class AiogramTelegramApi:
     """Adapter over the aiogram Bot."""
@@ -77,3 +79,22 @@ class AiogramTelegramApi:
         ) as exc:
             raise TelegramApiError(str(exc)) from exc
         return message.model_dump(exclude_none=True)
+
+    async def delete_message(self, *, chat_id: int, message_id: int) -> dict[str, Any]:
+        try:
+            result = await self._bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except TelegramRetryAfter as exc:
+            raise RetryableTelegramError(str(exc), retry_after=float(exc.retry_after)) from exc
+        except TelegramServerError as exc:
+            raise RetryableTelegramError(str(exc)) from exc
+        except TransportError as exc:
+            raise RetryableTelegramError(str(exc)) from exc
+        except TelegramBadRequest as exc:
+            # The message is already gone (e.g. deleted by the user or expired
+            # edit window) — cleanup is idempotent, treat it as success.
+            if "message" in str(exc).lower() and "not found" in str(exc).lower():
+                return {}
+            raise TelegramApiError(str(exc)) from exc
+        except (TelegramForbiddenError, TelegramUnauthorizedError) as exc:
+            raise TelegramApiError(str(exc)) from exc
+        return {"deleted": bool(result)}

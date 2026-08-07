@@ -139,6 +139,11 @@ class Settings(BaseSettings):
     outbox_max_attempts: int = 5
     outbox_retry_base_seconds: float = 2.0
     outbox_retry_max_seconds: float = 300.0
+    # Temporary "thinking" status bubbles: sent right after a user message,
+    # deleted just before the final reply. TTL guards against a status that
+    # never got a reply (e.g. the webhook died mid-turn).
+    outbox_status_enabled: bool = True
+    outbox_status_ttl_seconds: float = 600.0
 
     # Dev convenience: reply to every incoming message with a canned echo.
     echo_mode: bool = True
