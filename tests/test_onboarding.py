@@ -33,10 +33,10 @@ async def test_onboarding_runs_to_completion_and_persists(uow):
         turns = await run_flow(
             uow,
             user_id,
-            ["I'm an Investor", "semiconductors, earnings", "AAPL NVDA", "8:30am", "skip"],
+            ["I'm an Investor", "semiconductors, earnings", "AAPL NVDA", "8:30am"],
         )
-        assert len(turns) >= 4
-        assert turns[0].text is not None  # welcome question
+        assert len(turns) == 4
+        assert turns[0].text is not None  # interests question
         assert turns[-1].text is not None  # done message
         assert turns[-1].completed
 
@@ -58,6 +58,33 @@ async def test_onboarding_runs_to_completion_and_persists(uow):
         memories = await uow.memories.list_active(user_id)
         keys = {m.memory_key for m in memories}
         assert "user_profile" in keys and "user_interests" in keys
+
+
+async def test_onboarding_asks_each_question_once_in_order(uow):
+    async with uow:
+        user_id = await make_user(uow)
+        turns = await run_flow(uow, user_id, ["Investor", "AI", "NVDA", "8:00"])
+        texts = [t.text for t in turns if t.text]
+        assert len(turns) == 4
+        assert turns[3].completed
+        assert "monitor" in texts[0]  # interests/monitor question
+        assert "morning briefing" in texts[1]  # briefing question
+        assert "reminders" in texts[2]  # reminders question
+        assert "You're all set" in texts[3]  # done message
+        assert len({q for q in texts[:3]}) == 3  # no question is asked twice
+
+
+async def test_first_message_skip_configures_defaults_and_completes(uow):
+    async with uow:
+        user_id = await make_user(uow)
+        engine = OnboardingEngine(default_briefing_time="07:30")
+        turn = await engine.turn(uow, user_id=user_id, text="skip")
+        assert turn.completed
+        assert turn.followed_by_agent
+        assert turn.text is None
+        profile = await uow.profiles.get_by_user_id(user_id)
+        assert profile.onboarding_status == OnboardingStatus.COMPLETED
+        assert profile.briefing_time == "07:30"
 
 
 async def test_onboarding_all_skips(uow):
@@ -152,6 +179,14 @@ def test_parse_role_garbage_returns_none():
     assert _parse_role("not now") is None
 
 
+def test_parse_role_rejects_greetings():
+    assert _parse_role("hi") is None
+    assert _parse_role("Hello!") is None
+    assert _parse_role("good morning") is None
+    assert _parse_role("hey there") is None
+    assert _parse_role("how are you") is None
+
+
 def test_parse_interests_extracts_known_and_free():
     assert "semiconductors" in _parse_interests("semiconductors, tech")
     assert _parse_interests("macros and economy") != []
@@ -171,4 +206,13 @@ def test_parse_time():
 
 def test_wants_agent():
     assert _wants_agent("What can you do?")
+    assert not _wants_agent("I like tech")
+
+
+def test_wants_agent_identity_phrases():
+    assert _wants_agent("who are you")
+    assert _wants_agent("tell me about yourself")
+    assert _wants_agent("what are you")
+    assert _wants_agent("how can you help")
+    assert not _wants_agent("good morning")
     assert not _wants_agent("I like tech")

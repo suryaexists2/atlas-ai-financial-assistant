@@ -23,6 +23,12 @@ from app.infrastructure.db.uow import UnitOfWork
 logger = get_logger(__name__)
 
 _SKIP = {"skip", "later", "not now", "nahi", "pass", "none", "no thanks", "nope", "whatever"}
+_GREETINGS = {
+    "hi", "hello", "hey", "heya", "heyy", "hii", "hlo", "helo", "hellow",
+    "good morning", "good afternoon", "good evening", "good night", "morning",
+    "evening", "gm", "namaste", "hola", "yo", "sup", "howdy",
+    "hi there", "hey there", "hello there", "hi! how are you", "how are you",
+}
 _ROLES = {
     "investor",
     "analyst",
@@ -124,12 +130,8 @@ _CONNECT_THEN = (
     "for you. Say 'skip' — you can connect anytime later by simply asking."
 )
 _DONE = (
-    "You're all set{name}.\n\n"
-    "You can ask things like:\n"
-    '• "What moved the market today?"\n'
-    '• "Summarize Apple\'s latest earnings."\n'
-    '• "What\'s in this PDF?"  (just upload it)\n'
-    '• "Watch NVIDIA and notify me on SEC filings."\n\n'
+    "You're all set{name}. Just ask — market moves, news, filings, your "
+    "documents, or a meeting — and I'll take it from there.\n"
     "I'll send your {brief}."
 )
 
@@ -177,6 +179,14 @@ class OnboardingEngine:
             return OnboardingReply(completed=True, followed_by_agent=True)
 
         if step == "welcome":
+            if _is_skip(text):
+                # Skipping right away: configure the default briefing and hand
+                # over to the agent so the user can immediately ask anything.
+                briefing = profile.briefing_time or self._default_briefing_time
+                await uow.profiles.upsert(user_id, briefing_time=briefing)
+                await self._ensure_morning_brief(uow, user_id, briefing)
+                await self._complete(uow, user_id)
+                return OnboardingReply(completed=True, followed_by_agent=True)
             # The very first message may already answer the role question.
             role = _parse_role(text)
             if role:
@@ -189,7 +199,7 @@ class OnboardingEngine:
                     confidence=0.9,
                 )
                 await self._set_step(uow, user_id, "interests")
-                return OnboardingReply(text=_ROLE_THEN, still_onboarding=True)
+                return OnboardingReply(text=_INTERESTS_THEN, still_onboarding=True)
             await self._set_step(uow, user_id, "role")
             return OnboardingReply(text=_WELCOME, still_onboarding=True)
 
@@ -205,7 +215,7 @@ class OnboardingEngine:
                     confidence=0.9,
                 )
             await self._set_step(uow, user_id, "interests")
-            return OnboardingReply(text=_ROLE_THEN, still_onboarding=True)
+            return OnboardingReply(text=_INTERESTS_THEN, still_onboarding=True)
 
         if step == "interests":
             interests = _parse_interests(text)
@@ -234,7 +244,9 @@ class OnboardingEngine:
             await uow.profiles.upsert(user_id, briefing_time=briefing_time)
             await self._ensure_morning_brief(uow, user_id, briefing_time)
             await self._set_step(uow, user_id, "reminders")
-            return OnboardingReply(text=_BRIEFING_THEN, still_onboarding=True)
+            if self._google_connect_available:
+                return OnboardingReply(text=_CONNECT_THEN, still_onboarding=True)
+            return await self._finish(uow, user_id)
 
         if step == "reminders":
             if self._google_connect_available:
@@ -314,15 +326,30 @@ def _is_skip(text: str | None) -> bool:
 def _wants_agent(text: str | None) -> bool:
     if text is None:
         return False
-    t = text.strip().lower()
-    return "?" in t or t in {"help", "who are you", "what can you do", "start over"}
+    if "?" in text:
+        return True
+    t = text.strip().lower().strip(".,!?")
+    return t in {
+        "help",
+        "help me",
+        "who are you",
+        "what are you",
+        "what can you do",
+        "what do you do",
+        "how can you help",
+        "tell me about yourself",
+        "start over",
+        "restart",
+        "who made you",
+        "are you a bot",
+    }
 
 
 def _parse_role(text: str | None) -> str | None:
     if text is None:
         return None
     t = text.strip().strip(".,!?")
-    if not t or _is_skip(text):
+    if not t or _is_skip(text) or t.lower() in _GREETINGS:
         return None
     # Strip conversational prefixes: "i'm an investor"/"i am a founder".
     candidate = re.sub(
