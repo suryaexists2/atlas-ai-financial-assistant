@@ -33,10 +33,10 @@ async def test_onboarding_runs_to_completion_and_persists(uow):
         turns = await run_flow(
             uow,
             user_id,
-            ["I'm an Investor", "semiconductors, earnings", "AAPL NVDA", "8:30am"],
+            ["I'm an Investor", "semiconductors, AAPL NVDA", "8:30am", "skip"],
         )
         assert len(turns) == 4
-        assert turns[0].text is not None  # interests question
+        assert turns[0].text is not None  # monitor question
         assert turns[-1].text is not None  # done message
         assert turns[-1].completed
 
@@ -63,15 +63,25 @@ async def test_onboarding_runs_to_completion_and_persists(uow):
 async def test_onboarding_asks_each_question_once_in_order(uow):
     async with uow:
         user_id = await make_user(uow)
-        turns = await run_flow(uow, user_id, ["Investor", "AI", "NVDA", "8:00"])
+        engine = OnboardingEngine(google_connect_available=True)
+        turns = await run_flow(
+            uow,
+            user_id,
+            ["Investor", "AI NVDA", "8:00", "skip", "skip"],
+            engine,
+        )
         texts = [t.text for t in turns if t.text]
-        assert len(turns) == 4
-        assert turns[3].completed
+        assert len(turns) == 5
+        assert turns[-1].completed
         assert "monitor" in texts[0]  # interests/monitor question
         assert "morning briefing" in texts[1]  # briefing question
         assert "reminders" in texts[2]  # reminders question
-        assert "You're all set" in texts[3]  # done message
-        assert len({q for q in texts[:3]}) == 3  # no question is asked twice
+        assert "connect your Google" in texts[3]  # optional connect question
+        assert "You're all set" in texts[4]  # done message
+        assert len({q for q in texts[:4]}) == 4  # no question is asked twice
+
+        profile = await uow.profiles.get_by_user_id(user_id)
+        assert profile.briefing_time == "08:00"
 
 
 async def test_first_message_skip_configures_defaults_and_completes(uow):
@@ -140,7 +150,7 @@ async def test_google_connect_step_is_optional_and_skippable(uow):
         turns = await run_flow(
             uow,
             user_id,
-            ["I'm an Analyst", "tech", "AAPL", "8:00am", "skip", "skip"],
+            ["I'm an Analyst", "tech", "AAPL", "8:00am", "skip"],
             engine,
         )
         assert turns[-2].text is not None
@@ -159,7 +169,7 @@ async def test_google_connect_step_accepts_yes(uow):
         turns = await run_flow(
             uow,
             user_id,
-            ["Investor", "semiconductors", "NVDA", "9:00", "skip", "yes connect it"],
+            ["Investor", "semiconductors", "NVDA", "9:00", "yes connect it"],
             engine,
         )
         assert turns[-1].completed

@@ -228,25 +228,25 @@ class OnboardingEngine:
                     summary=f"interested in: {', '.join(interests)}",
                     confidence=0.85,
                 )
-            await self._set_step(uow, user_id, "watchlist")
-            return OnboardingReply(text=_WATCHLIST_THEN, still_onboarding=True)
-
-        if step == "watchlist":
+            # The monitor question also asks for tickers: capture them here.
             for symbol in _parse_symbols(text):
                 if await uow.watchlist.get_by_symbol(user_id, symbol) is None:
                     await uow.watchlist.add(user_id, symbol=symbol, name=None, sector=None)
             await self._set_step(uow, user_id, "briefing")
-            return OnboardingReply(text=_BRIEFING_THEN, still_onboarding=True)
+            return OnboardingReply(text=_WATCHLIST_THEN, still_onboarding=True)
 
         if step == "briefing":
             time_value, _ = _parse_time(text)
             briefing_time = time_value or profile.briefing_time or self._default_briefing_time
             await uow.profiles.upsert(user_id, briefing_time=briefing_time)
             await self._ensure_morning_brief(uow, user_id, briefing_time)
+            # Resilience: tickers arriving with the time answer still land in
+            # the watchlist instead of being silently dropped.
+            for symbol in _parse_symbols(text):
+                if await uow.watchlist.get_by_symbol(user_id, symbol) is None:
+                    await uow.watchlist.add(user_id, symbol=symbol, name=None, sector=None)
             await self._set_step(uow, user_id, "reminders")
-            if self._google_connect_available:
-                return OnboardingReply(text=_CONNECT_THEN, still_onboarding=True)
-            return await self._finish(uow, user_id)
+            return OnboardingReply(text=_BRIEFING_THEN, still_onboarding=True)
 
         if step == "reminders":
             if self._google_connect_available:
@@ -259,7 +259,8 @@ class OnboardingEngine:
             # later by asking the agent, so the optional step never blocks.
             return await self._finish(uow, user_id)
 
-        # "reminders" (and any unknown/unexpected state): finalize.
+        # Any unknown/unexpected state (including legacy "watchlist" steps
+        # persisted by older builds): finalize.
         return await self._finish(uow, user_id)
 
     async def _finish(self, uow: UnitOfWork, user_id: uuid.UUID) -> OnboardingReply:
