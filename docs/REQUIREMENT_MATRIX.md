@@ -33,7 +33,7 @@ Status legend: ✅ Complete · 🟡 Partial · ❌ Missing. Live column: 👍 ve
 | 24 | Accuracy: use reliable sources; communicate uncertainty | ✅ | provider-native responses; `briefing` only uses data block | — | Live | — |
 | 25 | Private/company research with citations-ish | ✅ (headlines carry source) | finnhub returns source field | — | Live | — |
 | 26 | Optional: Google Sheets (financial docs/spreadsheets) | ✅ | `providers/google_sheets.py`, `read_google_sheet` etc. | `test_agent_tools.py` | ⏳ | public-sheet reader works |
-| 27 | Optional: Gmail / Google Calendar / Google Drive | ❌ NOT implemented (deliberately optional; documented) + **honesty guardrail shipped** | `agent/context.py` system prompt (never fabricate email/calendar/Drive actions; offer alternatives; public Sheets links readable) | `test_agent_context.py` (guardrail tests) | 👍 (guardrail live) | 2026-08-07 05:47-05:48: "search my emails" → "I don't have access to your emails…"; "schedule a meeting…" → "I'm not connected to your calendar or email, so I won't be able to schedule a meeting… (offered alternative)" |
+| 27 | Optional: Gmail / Google Calendar / Google Drive | ✅ Gmail + Calendar + Drive (OAuth PKCE) | `providers/google_{oauth,gmail,calendar,drive}.py`, tools `search_emails` / `find_calendar_events` / `schedule_meeting` / `read_drive_doc`, `oauth.py` route, honesty guardrail retained | `test_google_connectors.py`, `test_agent_context.py`, `test_agent_tools.py` | 👍 | **2026-08-07 14:47 UTC (build 1da95a9)**: OAuth consent published to Production; tokens live for Gmail/Calendar/Drive; real Gmail search (Naukri mail), Calendar create+delete 204, Drive PDF parse, and **meeting scheduling via the bot** — "The meeting with suryatextnow@gmail.com has been scheduled for tomorrow at 10:30 am… \"earnings review\"" (fix: attendee objects from the model normalized → was Google 400 "Invalid attendee email") |
 | 28 | Favorite watchlist & monitor alerts | ✅ | `watchlist` repos, tools `add/remove/list` | `test_agent_tools.py`, repo tests | Live | TSLA added |
 | 29 | Custom alerts: price move %, news trigger, SEC filing | ✅ | `intelligence/alerts.py` (price/news/filing) with cooldown, `create_*_alert` tools | `test_intelligence.py`, `test_scheduler.py` | Live | NVDA alert created |
 | 30 | Reminders ("remind me...") | ✅ | `intelligence/reminders.py`, `create_reminder` tool, job `once` disable | `test_scheduler.py` | 👍 | fired 04:26, key outbox "⏰ Reminder" SENT, `enabled=False` after fire (once-disable live) |
@@ -51,15 +51,12 @@ Status legend: ✅ Complete · 🟡 Partial · ❌ Missing. Live column: 👍 ve
 
 ## Optional integrations (deliberately deferred — allowed by spec)
 
-- **Gmail / Google Calendar / Google Drive**: NOT implemented. Spec explicitly lists them
-  as optional integrations ("may integrate…"). Skipped to keep finance vertical deep and
-  the demo reliable within the timeline. How to enable later:
-  - `app/infrastructure/providers/gmail.py`: OAuth PKCE + google-auth; classify emails,
-    summarize, meeting preparation, action items.
-  - `app/domain/enums.py` IntegrationProvider: add `GMAIL`, `CALENDAR`, `DRIVE`;
-    `onboarding.py` add an optional "connect accounts" step; `tools.py` add
-    `search_emails`, `find_calendar_events`, `read_drive_doc`.
-  - Console: Google Cloud OAuth client → store refresh tokens in `integrations` table.
+- **Google Sheets**: ✅ live (public-sheet reader, `read_google_sheet`).
+- **Gmail / Google Calendar / Google Drive**: ✅ **implemented and live** (2026-08-07).
+  OAuth PKCE consent published to Production; `search_emails`, `find_calendar_events`,
+  `schedule_meeting`, `read_drive_doc` tools; tokens refreshed automatically. Root-cause
+  fix deployed in build `b014668`: model-emitted attendee objects (`[{"email": …}]`)
+  are normalized to plain strings (was Google 400 "Invalid attendee email").
 
 ## Current outstanding work (tracked live)
 
@@ -71,7 +68,9 @@ Status legend: ✅ Complete · 🟡 Partial · ❌ Missing. Live column: 👍 ve
 | E2E multi-workflow prod run | ✅ done (research, quote, watchlist, news, alert, reminder, document, voice) |
 | Voice STT live | ✅ done — 4 real voice notes (EN/Hinglish/Hindi) via Groq, replies SENT (05:31-05:32 UTC) |
 | Images/OCR live | ✅ done — real chart PNG → vision described, caption Q&A (05:39 UTC) |
-| Email/Calendar/Drive honesty guardrail | ✅ shipped + live-verified (05:47-05:48 UTC) |
+| Email/Calendar/Drive honesty guardrail | ✅ shipped + live-verified (05:47-05:48 UTC); superseded by real connectors (14:47 UTC) |
+| Google connectors E2E (Gmail search, Calendar create/list/delete, Drive read) | ✅ done — 14:47 UTC build 1da95a9: meeting scheduled via bot, voice reminder, xlsx walkthrough |
+| Agent tool-round exhaustion recovery (tools-free final pass) | ✅ done — deployed `91cbf01`; meeting turns now end with a real answer instead of the generic fallback |
 | Final spec audit + report | ✅ done — see `docs/DEPLOYMENT_REPORT.md` |
 
 ## Voice / STT known limitation (operator action)

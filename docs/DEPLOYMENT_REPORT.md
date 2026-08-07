@@ -1,7 +1,8 @@
 ﻿# Atlas AI Financial Assistant - Deployment Report
 
-Date: 2026-08-08 · Environment: production (Render free tier)
-Commits: `612a1ce`, `932ba75`, `398c823` (auto-deployed on push to `origin/main`)
+Date: 2026-08-07 · Environment: production (Render free tier)
+Commits (live build `1da95a9`): `612a1ce`, `932ba75`, `398c823`, `28dce9b`,
+`5506381`, `2f94a67`, `91cbf01`, `cf8f934`, `b014668`, `1da95a9` (auto-deployed on push)
 
 ## 1. What was deployed
 
@@ -35,11 +36,42 @@ Commits: `612a1ce`, `932ba75`, `398c823` (auto-deployed on push to `origin/main`
 
 | Item | Result |
 |---|---|
-| Health | 200 OK |
+| Health | 200 OK (`{"status":"ok","app":"Atlas","version":"0.1.0","env":"prod","build":"<commit>"}`) |
 | Cycle jobs | `price_alerts`, `news_alerts`, `filing_alerts` ran 04:30 / 04:45; `next_run_at` advanced to 05:00; `job_events` recorded |
 | Reminder | "⏰ Reminder: review the audit" enqueued 04:26:16, **SENT** 04:26:22; job auto-disabled (`enabled=false`) after fire |
 | E2E (text) | research, quote, watchlist, market news, NVDA alert, reminder, PDF doc - all acked; document PROCESSED + reply SENT |
-| **Voice (new)** | **4 real voice notes, all transcribed + replied** (see below) |
+| **Voice** | **4 real voice notes, all transcribed + replied** (see below) |
+| **Gmail connector** | OAuth PKCE live; prod `search_emails` returned real inbox matches (T3) |
+| **Google Calendar** | `create_event` 200 + HTTP DELETE 204 (write verified); bot meeting scheduled end-to-end |
+| **Google Drive** | `read_drive_doc` parsed a real 357 KB `inbound…pdf` (3963 chars) and summarized via webhook |
+
+### Google-connector end-to-end proof (14:44-14:53 UTC)
+
+OAuth consent published to Production (external, 100-tester cap); `integration_links`
+rows for GMAIL/CALENDAR/DRIVE with access+refresh tokens and requested scopes.
+
+- Meeting scheduling through the bot (fixed flow): "The meeting with
+  `suryatextnow@gmail.com` has been scheduled for tomorrow at 10:30 am for 30 minutes
+  and is titled 'earnings review'."
+- Voice reminder: "Remind me to review the NVIDIA earnings call" → reminder set.
+- Excel chat: `earnings_model.xlsx` walkthrough (Revenue 95,000 / +6.7%, Gross 52% / +3pts,
+  EPS 1.64 / +8.6%).
+
+### Root cause fixed for the meeting fallback
+
+The Google Calendar create path inside the agent always failed with "Google API
+error" while identical direct calls succeeded. Two fixes shipped this milestone:
+
+1. `91cbf01` — When an agent turn exhausts its tool-call budget without a final
+   answer, give it one last **tools-free** pass so the user still receives a real
+   reply (the meeting reply, not the "temporary hiccup" fallback).
+2. `b014668` — the model emitted `schedule_meeting.attendees` in Google's native
+   shape (`[{"email": …}]`); the handler stringified the dicts and Google returned
+   **400 "Invalid attendee email"**. Attendees are now normalized (dict → email value)
+   before the request body is built. Regression test:
+   `test_schedule_meeting_normalizes_object_attendees`.
+3. `cf8f934` — Calendar API errors now surface status + short body in the tool
+   result so diagnostics are no longer opaque.
 
 ### Voice-STT end-to-end proof (05:31-05:32 UTC)
 
@@ -77,11 +109,14 @@ now succeed after the Groq switch.
 ## 6. Remaining items
 
 - [x] Voice live-verified (EN + Hindi/Hinglish) 2026-08-07 05:31-05:32 UTC
+- [x] Google connectors live (Gmail / Calendar / Drive) 2026-08-07 14:44-14:53 UTC
+- [x] Meeting scheduling fixed and re-verified (attendee normalization, build `b014668`)
 - [ ] Watch the 08:00 UTC daily-brief run (`scope=both`) for the interest-section prose
-- Optional Gmail / Calendar / Drive: deliberately deferred (see matrix note)
 
 ## 7. Security note
 
 No API keys or secrets are printed, committed, or logged. Env secret pointers
 used for behavior confirmation only. Voice transcripts in DB contain no secret
-data.
+data. **Operator action (after the hackathon event): regenerate the Google OAuth
+client secret** — it was shared in plain chat during troubleshooting and mirrored
+in local scratch scripts; update the Render env after rotation.
