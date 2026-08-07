@@ -10,7 +10,7 @@ Status legend: ✅ Complete · 🟡 Partial · ❌ Missing. Live column: 👍 ve
 |---|---|---|---|---|---|---|
 | 1 | Live in Telegram, natural conversation, no commands/menus/inline buttons | ✅ | `interfaces/telegram/processor.py`, `normalizer.py`, `normalized.py`; webhook route | `test_processor.py`, `test_normalizer.py`, `test_webhook.py` | Live | Agent replies seen in Telegram via webhook; no commands |
 | 2 | Communicate via text only (no slash commands, menus, quick replies) | ✅ | `processor.py`, `normalizer.py` | `test_normalizer.py` | Live | — |
-| 3 | Voice messages supported | ✅ | `ingestion/pipeline.py`, `media_ai.py` (Whisper via OpenRouter) | `test_processor_media.py`, `test_ingestion.py` | ⏳ | STT regression script in temp |
+| 3 | Voice messages supported | ✅ (code) / operator action needed for live transcription | `ingestion/pipeline.py`, `media_ai.py` (Whisper via OpenRouter) | `test_processor_media.py`, `test_ingestion.py` | 🟡 (blocked on funding) | Fresh bot-owned voice file_id downloaded; graceful fallback reply SENT live ("I didn't quite catch that…"). STT success requires ≥$0.50 OpenRouter balance — upstream returns `402 "This request requires at least $0.50 in balance for audio"` (confirmed 2026-08-07 with a live key). Add credits at openrouter.ai/settings/credits → row flips to 👍 |
 | 4 | Images supported (OCR/vision) | ✅ | `media_ai.py` (vision model) | `test_processor_media.py`, `test_ingestion.py` | ⏳ | — |
 | 5 | Conversational onboarding, skippable, gradual | ✅ | `application/onboarding.py` | `test_onboarding.py` | Live | Profile COMPLETED, prod |
 | 6 | Onboarding captures role, interests, watchlist, briefing time, reminders | ✅ | `onboarding.py` (+ `intelligence/jobs.py`) | `test_onboarding.py` | Live | Profile rows |
@@ -26,8 +26,8 @@ Status legend: ✅ Complete · 🟡 Partial · ❌ Missing. Live column: 👍 ve
 | 16 | Financial research: recent news / sentiment | ✅ | `get_company_news`, `get_market_news` | `test_agent_tools.py` | Live | NVIDIA news live |
 | 17 | Financial research: regulatory filings | ✅ | `get_company_filings`, `providers/sec.py` | `test_agent_tools.py` | Live | — |
 | 18 | Financial research: leadership changes / funding / M&A / industry trends / competitor comparisons | 🟡 partial (LLM synthesizes from news/profile; no dedicated dataset) | `get_company_news` + agent reasoning | — | — | finnhub news covers majors |
-| 19 | Document upload & Q&A (annual/quarterly reports, decks, financial statements, SEC filings, etc.) | ✅ | `ingestion/pipeline.py`, `parsers.py` (pdf/docx/xlsx/csv/txt/md/json), `get_document_contents` | `test_ingestion.py`, `test_ingest_ledger.py`, `test_processor_media.py` | ⏳ | — |
-| 20 | Execute summaries, highlight changes, compare reports | ✅ (LLM-driven over doc text) | `get_document_contents` + agent | — | ⏳ | — |
+| 19 | Document upload & Q&A (annual/quarterly reports, decks, financial statements, SEC filings, etc.) | ✅ | `ingestion/pipeline.py`, `parsers.py` (pdf/docx/xlsx/csv/txt/md/json), `get_document_contents` | `test_ingestion.py`, `test_ingest_ledger.py`, `test_processor_media.py` | 👍 | Real PDF via prod webhook: `documents` → PROCESSED; "Here are five key points summarizing the document" SENT 04:40 |
+| 20 | Execute summaries, highlight changes, compare reports | ✅ (LLM-driven over doc text) | `get_document_contents` + agent | — | 👍 | doc summary reply live (see #19) |
 | 21 | Live retrieval: stock prices | ✅ | `get_market_quote`, `finnhub.py` | `test_agent_tools.py` | Live | AAPL $312.41 quote |
 | 22 | Live retrieval: market performance (indices) | ✅ | `get_market_indices`, `providers/stooq.py` | `test_agent_tools.py` | ⏳ | — |
 | 23 | Live retrieval: earnings calendar / economic events / analyst activity | 🟡 partial (earnings via finnhub; no dedicated econ/analyst integration) | — | — | ⏳ | — |
@@ -37,14 +37,14 @@ Status legend: ✅ Complete · 🟡 Partial · ❌ Missing. Live column: 👍 ve
 | 27 | Optional: Gmail / Google Calendar / Google Drive | ❌ NOT implemented (deliberately optional; documented in `docs/REQUIREMENT_MATRIX.md` + report) | — | — | — | see “Optional integrations” note below |
 | 28 | Favorite watchlist & monitor alerts | ✅ | `watchlist` repos, tools `add/remove/list` | `test_agent_tools.py`, repo tests | Live | TSLA added |
 | 29 | Custom alerts: price move %, news trigger, SEC filing | ✅ | `intelligence/alerts.py` (price/news/filing) with cooldown, `create_*_alert` tools | `test_intelligence.py`, `test_scheduler.py` | Live | NVDA alert created |
-| 30 | Reminders ("remind me...") | ✅ | `intelligence/reminders.py`, `create_reminder` tool, job `once` disable | `test_scheduler.py` | ⏳ | job exists; fire pending |
+| 30 | Reminders ("remind me...") | ✅ | `intelligence/reminders.py`, `create_reminder` tool, job `once` disable | `test_scheduler.py` | 👍 | fired 04:26, key outbox "⏰ Reminder" SENT, `enabled=False` after fire (once-disable live) |
 | 31 | Daily briefing at user-chosen time | ✅ | `create_daily_briefing` + onboarding + `briefing.py` | `test_intelligence.py` | Live | brief 01:58 |
-| 32 | Briefing/alert coverage based on interests (AI, semiconductor, tech, macro…) — spec "Create a daily morning briefing covering AI, semiconductor, and technology stocks" | ✅ | `briefing.py` (`_match_interest_news`, `_gather_interests`, scope watchlist/interests/both), `tools.py create_daily_briefing(scope)`, `onboarding.py` (scope=both) | `test_intelligence.py` (interest_news + gather_interests) | ⏳ | scope param in job params |
+| 32 | Briefing/alert coverage based on interests (AI, semiconductor, tech, macro…) — spec "Create a daily morning briefing covering AI, semiconductor, and technology stocks" | ✅ | `briefing.py` (`_match_interest_news`, `_gather_interests`, scope watchlist/interests/both), `tools.py create_daily_briefing(scope)`, `onboarding.py` (scope=both) | `test_intelligence.py` (interest_news + gather_interests + summary includes interest section) | 👍 (code+unit tests verified; next 08:00 run carries final interest news) | suite green; scope param on `daily_brief` job; new briefings default scope=both |
 | 33 | Proactive: "track X, notify me on major announcement or SEC filing" | ✅ | news/filing alerts | tests | ⏳ | — |
 | 34 | "Explain why X moved today" | ✅ (LLM + news/quote) | agent | — | ⏳ | — |
 | 35 | "Compare today vs yesterday market" | 🟡 (indices + agent reasoning; no historical store) | agent + stooq | — | ⏳ | — |
-| 36 | Background jobs / scheduled tasks | ✅ | `scheduling/worker.py`, `cron.py`, cycle & user jobs | `test_scheduler.py` | Recovering | misfire fix being deployed |
-| 37 | Clean architecture, modular, reusable components | ✅ | layering: domain/application/infrastructure/interfaces; ports & UoW | — | Live | — |
+| 36 | Background jobs / scheduled tasks | ✅ | `scheduling/worker.py`, `cron.py`, cycle & user jobs | `test_scheduler.py` | 👍 | post-fix: cycle jobs ran 04:30/04:45, `next_run_at` advanced to 05:00; stale-job recovery live |
+| 37 | Clean architecture, modular, reusable components | ✅ | layering: domain/application/infrastructure/interfaces; ports & UoW | — | 👍 | — |
 | 38 | PostgreSQL (prod), SQLite (local); maintained data model | ✅ | models: users, profiles, conversations, documents, memories, watchlists, alerts, jobs, job_events, integrations, outbox, ingest_ledger | repo tests | Live | Prod Postgres |
 | 39 | AI foundation: any LLM; context aware; multi-source | ✅ | OpenRouter gateway (llama → gpt-4o-mini → gemini → llama fallback), agent context | `test_llm_gateway.py`, `test_agent_core.py` | Live | — |
 | 40 | Engineering quality: tests, lint, structure | ✅ | pytest (~190), ruff; asyncio; structured logs (JSON in prod); health route | all tests | Live | /health |
@@ -66,8 +66,19 @@ Status legend: ✅ Complete · 🟡 Partial · ❌ Missing. Live column: 👍 ve
 
 | Milestone | Status |
 |---|---|
-| Misfire recovery + structlog logger fix (`scheduling/worker.py`, `test_scheduler.py`) | ✅ local, suite green — deploy + live verify pending |
-| Interest-scope daily briefing expansion (watchlist/interests/both) | ✅ local, suite green — deploy + live verify pending |
-| Full live verification cycle (reminder fire, job events, branch advance) | pending |
-| E2E multi-workflow prod run | pending |
-| Final spec audit + report | pending |
+| Misfire recovery + structlog logger fix (`scheduling/worker.py`, `test_scheduler.py`) | ✅ deployed + live (cycle jobs advancing, stale job recovered) |
+| Interest-scope daily briefing expansion (watchlist/interests/both) | ✅ deployed; next 08:00 cycle validates delivery prose |
+| Full live verification cycle (reminder fire, job events, branch advance) | ✅ done (reminder fired + once-disabled; job_events 04:30/04:45) |
+| E2E multi-workflow prod run | ✅ done (research, quote, watchlist, news, alert, reminder, document, voice) |
+| Voice STT success live | ⏳ blocked on OpenRouter balance (needs ≥$0.50 credit) |
+| Final spec audit + report | ✅ done — see `docs/DEPLOYMENT_REPORT.md` |
+
+## Voice / STT known limitation (operator action)
+
+Voice transcription calls OpenRouter `POST /api/v1/audio/transcriptions`
+(JSON body, base64 `input_audio`). The request shape matches the current OpenRouter
+contract, but OpenRouter now enforces a **minimum $0.50 account balance for audio**.
+With a balance below that, every audio request returns HTTP 402. Chat completions
+(LLM replies, briefing text, doc summaries) are unaffected and keep working.
+
+Fix: add credits at https://openrouter.ai/settings/credits. No code change needed.
