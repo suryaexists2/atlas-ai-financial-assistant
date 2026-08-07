@@ -102,7 +102,8 @@ class SchedulerWorker:
             for job in jobs:
                 next_run = job.next_run_at
                 if next_run is None:
-                    next_run = compute_next_run(job.cron_expr, after=now)
+                    # Never scheduled before (e.g. freshly created): due now.
+                    next_run = now
                 elif next_run.tzinfo is None:
                     next_run = next_run.replace(tzinfo=UTC)
                 if next_run is None:

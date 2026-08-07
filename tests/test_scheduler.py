@@ -2,6 +2,8 @@
 
 import datetime as dt
 
+from sqlalchemy import select
+
 from app.application.scheduling.cron import (
     compute_next_run,
     cron_from_local_time,
@@ -79,6 +81,44 @@ async def test_scheduler_sweeps_due_jobs_once(session_factory, db_engine):
     assert called == ["reminder"]
 
     # second sweep must not re-fire the same occurrence (idempotent run_key)
+    assert await worker.sweep_once() == 0
+
+
+async def test_scheduler_runs_never_scheduled_job_immediately(session_factory, db_engine):
+    """Jobs created without next_run_at (NULL, like ensure_cycle_jobs) must fire
+    on the next sweep instead of being skipped forever."""
+    from app.domain.entities import ScheduledJob
+    from app.infrastructure.db.session import async_sessionmaker
+
+    def fake_now():
+        return dt.datetime(2026, 8, 7, 12, 1, 0, tzinfo=dt.UTC)
+
+    maker = async_sessionmaker(bind=db_engine)
+    async with maker() as session:
+        session.add(
+            ScheduledJob(job_type="price_alerts", cron_expr="*/15 * * * *")
+        )
+        await session.commit()
+
+    called: list[str] = []
+
+    async def handler(inner_uow, job, context):
+        called.append(job.job_type)
+
+    worker = SchedulerWorker(maker, JobRunner({"price_alerts": handler}), now_fn=fake_now)
+    assert await worker.sweep_once() == 1
+    assert called == ["price_alerts"]
+
+    # after the immediate run the job gets a real next_run_at on the boundary
+    async with maker() as session:
+        job = (await session.execute(
+            select(ScheduledJob).where(ScheduledJob.job_type == "price_alerts")
+        )).scalar_one()
+        assert job.last_run_at is not None
+        assert job.next_run_at is not None
+        assert job.next_run_at.replace(tzinfo=dt.UTC) > fake_now()
+
+    # already covered occurrence does not re-fire
     assert await worker.sweep_once() == 0
 
 
