@@ -245,6 +245,9 @@ def test_status_text_is_context_aware():
     assert status_text_for(msg("What is NVDA trading at?")) == (
         "🔎 Checking the latest market data..."
     )
+    assert status_text_for(msg("Any news about Tesla?")) == (
+        "🔎 Checking the latest market data..."
+    )
     assert status_text_for(msg("connect my gmail")) == (
         "🔗 Checking your connected Google account..."
     )

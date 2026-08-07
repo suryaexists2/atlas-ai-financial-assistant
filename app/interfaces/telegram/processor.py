@@ -60,7 +60,7 @@ _KIND_LABEL = {
 _STATUS_GOOGLE_RE = re.compile(r"(?i)\b(?:google|gmail|calendar|drive|sheet|meeting|email)\b")
 _STATUS_MARKET_RE = re.compile(
     r"(?i)\b(?:quote|price|stock|stocks|market|trading|ticker|earnings|filing|filings|"
-    r"index|indices|nifty|sensex)\b|\$"
+    r"news|index|indices|nifty|sensex)\b|\$"
 )
 
 
