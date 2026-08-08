@@ -26,13 +26,13 @@ logger = get_logger(__name__)
 
 # Qwen (and other reasoning models) wrap their reasoning in <think>...</think>.
 # The reasoning is not the deliverable: strip it so the extracted content is the
-# actual description/OCR text.
-_REASONING_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+# actual description/OCR text. Some models never close the block, so an
+# unterminated <think> runs to the end of the string.
+_REASONING_RE = re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL)
 
 
 def _strip_reasoning(text: str) -> str:
-    cleaned = _REASONING_RE.sub("", text).strip()
-    return cleaned or text.strip()
+    return _REASONING_RE.sub("", text).strip()
 
 _AUDIO_TRANSCRIPTIONS_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
 _CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -228,6 +228,7 @@ class GroqVision:
             "model": self._model,
             "max_tokens": 1500,
             "temperature": 0.0,
+            "reasoning_effort": "none",
             "messages": [
                 {
                     "role": "user",

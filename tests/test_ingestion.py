@@ -488,6 +488,7 @@ async def test_groq_vision_sends_openai_compatible_body():
         captured["auth"] = request.headers.get("authorization")
         body = json.loads(request.content)
         captured["model"] = body["model"]
+        captured["reasoning_effort"] = body.get("reasoning_effort")
         content = body["messages"][0]["content"]
         captured["has_text"] = any(part.get("type") == "text" for part in content)
         img = next(part for part in content if part.get("type") == "image_url")
@@ -504,6 +505,7 @@ async def test_groq_vision_sends_openai_compatible_body():
     assert captured["path"] == "/openai/v1/chat/completions"
     assert captured["auth"] == "Bearer groq-test-key"
     assert captured["model"] == "qwen/qwen3.6-27b"
+    assert captured["reasoning_effort"] == "none"
     assert captured["has_text"]
     assert captured["data_uri"]
 
@@ -554,6 +556,40 @@ async def test_groq_vision_strips_reasoning_block():
         result = await vision.describe(data)
     assert "think" not in result
     assert result.startswith('The chart is titled "Sales by Year and Country".')
+
+
+async def test_groq_vision_strips_unterminated_reasoning_block():
+    """Some Qwen outputs never close the <think> block: the reasoning runs to
+    the end of the string and must still be dropped entirely."""
+    import httpx
+
+    from app.infrastructure.ingestion.media_ai import GroqVision
+
+    transport = httpx.MockTransport(
+        lambda req: httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                "<think>The user wants a description of the chart.\n"
+                                "I will transcribe the text found.\n\n"
+                                "Text found:\n\"Verticle Grouped Bar Chart\"\n"
+                                "\"Sales by Year and Country\""
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+    )
+    async with httpx.AsyncClient(transport=transport) as http:
+        vision = GroqVision("groq-test-key", http=http)
+        data = FileData(raw=b"png-bytes", mime_type="image/png")
+        result = await vision.describe(data)
+    assert "think" not in result
+    assert result == ""
 
 
 async def test_groq_vision_http_error_raises():
