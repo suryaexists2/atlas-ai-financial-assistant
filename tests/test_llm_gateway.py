@@ -566,26 +566,29 @@ async def test_groq_gateway_raises_when_all_keys_exhausted(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_groq_gateway_retries_same_key_on_per_minute_429():
-    """A 429 that names the per-minute (TPM) window must NOT park the key —
-    it retries on the same key once the window rolls over."""
+    """A 429 naming the per-minute (TPM) window parks the key briefly (never
+    until midnight) and the retry lands on the next key's fresh window."""
     from app.infrastructure.llm import keys as keys_module
     from app.infrastructure.llm.keys import GroqKeyPool
 
     now = [1_000_000.0]
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(keys_module, "_now_utc", lambda: now[0])
-    monkeypatch.setattr(keys_module, "_next_midnight", lambda: now[0] + 1)
+    monkeypatch.setattr(keys_module, "_next_midnight", lambda: now[0] + 1_000_000)
 
     pool = GroqKeyPool(["key-a", "key-b"])
     seen: list[str] = []
-    calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request.headers["authorization"])
-        calls["n"] += 1
-        if calls["n"] == 1:
+        auth = request.headers["authorization"]
+        seen.append(auth)
+        if auth == "Bearer key-a":
             return httpx.Response(
-                429, text="Request too large for model `x` ... tokens per minute (TPM): Limit 8000, Requested 8200"
+                429,
+                text=(
+                    "Rate limit reached on tokens per minute (TPM): "
+                    "Limit 8000, Used 6000"
+                ),
             )
         return httpx.Response(
             200,
@@ -604,7 +607,11 @@ async def test_groq_gateway_retries_same_key_on_per_minute_429():
     gateway._tpm_retry_seconds = 0.1
     response = await gateway.complete([{"role": "user", "content": "hi"}])
     assert response.content == "ok"
-    assert seen == ["Bearer key-a", "Bearer key-a"]
+    assert seen == ["Bearer key-a", "Bearer key-b"]
+    # key-a is parked only for its TPM window, NOT until midnight: bump the
+    # clock past the window and the primary comes back.
+    assert pool.current() == "key-b"
+    now[0] += 61
     assert pool.current() == "key-a"
 
 
@@ -654,7 +661,13 @@ async def test_413_tpm_from_groq_retried_with_long_pause():
         if body["model"] == "model-x":
             groq_calls["n"] += 1
             if groq_calls["n"] == 1:
-                return httpx.Response(413, text="Request too large for model `x` in organization `org` service tier `on_demand` on tokens per minute (TPM): Limit 1000, current 1500")
+                return httpx.Response(
+                    413,
+                    text=(
+                        "Request too large on tokens per minute (TPM): "
+                        "Limit 1000, current 1500"
+                    ),
+                )
         return httpx.Response(
             200,
             json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},

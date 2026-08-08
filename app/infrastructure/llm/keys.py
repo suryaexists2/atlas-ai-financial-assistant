@@ -84,14 +84,27 @@ class GroqKeyPool:
         return None
 
     def mark_exhausted(self, key: str) -> None:
-        """Park ``key`` (rate-limited) until the next UTC midnight."""
+        """Park ``key`` (daily rate-limited) until the next UTC midnight."""
+        self.park(key, _next_midnight())
+
+    def park(self, key: str, until_epoch: float) -> None:
+        """Park ``key`` until ``until_epoch``.
+
+        Daily caps use the next UTC midnight; per-minute TPM/RPM windows use
+        ~60s from now, so the burst rolls over to another key without the
+        primary being stranded for the rest of the day.
+        """
         for idx, candidate in enumerate(self._keys):
             if candidate == key:
-                self._exhausted_until[idx] = _next_midnight()
+                self._exhausted_until[idx] = until_epoch
                 logger.warning(
-                    "groq_key_exhausted",
+                    "groq_key_parked",
                     key_index=idx,
                     total_keys=len(self._keys),
-                    reset_at=self._exhausted_until[idx],
+                    until=until_epoch,
                 )
                 return
+
+    def park_for(self, key: str, seconds: float) -> None:
+        """Park ``key`` for ``seconds`` from the pool clock (UTC epoch)."""
+        self.park(key, _now_utc() + seconds)

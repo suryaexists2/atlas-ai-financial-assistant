@@ -228,18 +228,20 @@ class OpenRouterGateway(LLMGateway):
         except httpx.HTTPError as exc:
             raise LLMGatewayError(f"LLM request failed: {exc}") from exc
 
-        if (
-            response.status_code == 429
-            and key is not None
-            and self._key_pool is not None
-            and len(self._key_pool.keys) > 1
-            and is_groq_daily_cap_429(response.status_code, response.text)
-        ):
-            # Daily caps are per account: only fail over when a spare key
-            # exists AND the body names the daily bucket. Per-minute TPM/RPM
-            # windows also return 429 but roll over in ~60s — parking the key
-            # for those strands every key on a burst.
-            self._key_pool.mark_exhausted(key)
+        if response.status_code == 429 and key is not None and self._key_pool is not None:
+            if len(self._key_pool.keys) > 1 and is_groq_daily_cap_429(
+                response.status_code, response.text
+            ):
+                # Daily caps are per account: only fail over when a spare key
+                # exists AND the body names the daily bucket.
+                self._key_pool.mark_exhausted(key)
+            elif len(self._key_pool.keys) > 1 and "tokens per minute" in (
+                response.text or ""
+            ).lower():
+                # Per-minute TPM windows also return 429 but roll over in ~60s:
+                # park THIS key briefly so the retry lands on another key with
+                # its own window instead of re-413ing on the same one.
+                self._key_pool.park_for(key, 60)
         if response.status_code == 429 or response.status_code >= 500:
             raise LLMGatewayTransientError(
                 f"LLM provider transient error {response.status_code}: {response.text[:200]}",

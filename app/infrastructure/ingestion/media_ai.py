@@ -13,7 +13,6 @@ asking the model to both describe the image and transcribe any readable text
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import re
 
@@ -113,15 +112,11 @@ class GroqSTT:
                 response.status_code == 429
                 and self._key_pool is not None
                 and attempt == 0
-                and is_groq_daily_cap_429(response.status_code, response.text)
             ):
-                self._key_pool.mark_exhausted(key)
-                continue
-            if response.status_code == 429 and attempt == 0:
-                # Per-minute TPM/RPM window (not the daily bucket): wait for
-                # the window to roll over and retry on the SAME key instead of
-                # burning the pool.
-                await asyncio.sleep(_WINDOW_RETRY_SLEEP)
+                if is_groq_daily_cap_429(response.status_code, response.text):
+                    self._key_pool.mark_exhausted(key)
+                elif "tokens per minute" in (response.text or "").lower():
+                    self._key_pool.park_for(key, _WINDOW_RETRY_SLEEP)
                 continue
             if response.status_code >= 400:
                 raise RuntimeError(
@@ -308,15 +303,11 @@ class GroqVision:
                 response.status_code == 429
                 and self._key_pool is not None
                 and attempt == 0
-                and is_groq_daily_cap_429(response.status_code, response.text)
             ):
-                self._key_pool.mark_exhausted(key)
-                continue
-            if response.status_code == 429 and attempt == 0:
-                # Per-minute TPM/RPM window (not the daily bucket): wait for
-                # the window to roll over and retry on the SAME key instead of
-                # burning the pool.
-                await asyncio.sleep(_WINDOW_RETRY_SLEEP)
+                if is_groq_daily_cap_429(response.status_code, response.text):
+                    self._key_pool.mark_exhausted(key)
+                elif "tokens per minute" in (response.text or "").lower():
+                    self._key_pool.park_for(key, _WINDOW_RETRY_SLEEP)
                 continue
             if response.status_code >= 400:
                 raise RuntimeError(
