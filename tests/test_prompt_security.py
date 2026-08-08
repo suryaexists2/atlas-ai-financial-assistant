@@ -98,9 +98,18 @@ def test_system_prompt_has_fixed_identity_and_boundaries():
 
 
 def test_system_prompt_forbids_tools_for_off_topic_chat():
-    assert "NEVER call a tool for greetings, small talk, jokes" in SYSTEM_PROMPT
-    assert "tell one (a finance pun is fine)" in SYSTEM_PROMPT
-    assert "Redirect WITHOUT tools" in SYSTEM_PROMPT
+    compact = " ".join(SYSTEM_PROMPT.split())
+    assert "NEVER call a tool for greetings or harmless casual chat" in compact
+    assert "do NOT fulfill non-financial content requests" in compact
+    assert "Redirect WITHOUT tools" in compact
+
+
+def test_system_prompt_never_fulfills_off_topic_content():
+    compact = " ".join(SYSTEM_PROMPT.split())
+    assert "NEVER fulfill requests outside your financial purpose" in compact
+    assert "poems, stories, essays, songs, recipes, coding help" in compact
+    assert "Do not write the requested content, even briefly" in compact
+    assert "do not tell jokes" in compact
 
 
 def test_system_prompt_forbids_revealing_itself():
