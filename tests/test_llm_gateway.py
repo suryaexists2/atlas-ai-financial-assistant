@@ -14,6 +14,7 @@ from app.infrastructure.llm.gateway import (
     LLMGatewayTransientError,
     OpenRouterGateway,
 )
+from app.infrastructure.llm.keys import GroqKeyPool
 from app.infrastructure.llm.models_registry import FreeModel, FreeModelRegistry
 
 
@@ -499,6 +500,66 @@ async def test_groq_gateway_uses_qwen_fallback_and_tunes_reasoning_per_model():
     assert qwen["reasoning_effort"] == "none"
     assert qwen["reasoning_format"] == "parsed"
     assert "tools" in qwen
+
+
+@pytest.mark.asyncio
+async def test_groq_gateway_switches_key_on_ratelimit():
+    """One key per request: the request is retried with the next key only after
+    a 429, and the pool stays on the healthy key afterwards."""
+    pool = GroqKeyPool(["key-a", "key-b"])
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        auth = request.headers["authorization"]
+        seen.append(auth)
+        if auth == "Bearer key-a":
+            return httpx.Response(429, text="tokens per day exceeded")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "model": "openai/gpt-oss-120b",
+            },
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    gateway = GroqGateway(
+        "ignored",
+        "openai/gpt-oss-120b",
+        max_retries=1,
+        http=http,
+        key_pool=pool,
+    )
+    response = await gateway.complete([{"role": "user", "content": "hi"}])
+    assert response.content == "ok"
+    assert seen == ["Bearer key-a", "Bearer key-b"]
+    assert pool.current() == "key-b"
+    assert pool.current() == "key-b"
+
+
+@pytest.mark.asyncio
+async def test_groq_gateway_raises_when_all_keys_exhausted(monkeypatch):
+    from app.infrastructure.llm import keys as keys_module
+
+    now = [1_000_000.0]
+    monkeypatch.setattr(keys_module, "_now_utc", lambda: now[0])
+    monkeypatch.setattr(keys_module, "_next_midnight", lambda: now[0] + 1)
+    pool = GroqKeyPool(["key-a", "key-b"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="rate limited")
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    gateway = GroqGateway(
+        "ignored",
+        "openai/gpt-oss-120b",
+        max_retries=2,
+        http=http,
+        key_pool=pool,
+    )
+    with pytest.raises(LLMGatewayError) as exc_info:
+        await gateway.complete([{"role": "user", "content": "hi"}])
+    assert "exhausted" in str(exc_info.value)
 
 
 @pytest.mark.asyncio

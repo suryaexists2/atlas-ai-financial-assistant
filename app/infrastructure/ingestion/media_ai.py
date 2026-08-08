@@ -21,6 +21,7 @@ import httpx
 from app.application.ingestion.pipeline import VisionAnalyzer
 from app.application.ingestion.types import FileData
 from app.core.logging import get_logger
+from app.infrastructure.llm.keys import GroqKeyPool
 
 logger = get_logger(__name__)
 
@@ -58,7 +59,9 @@ class GroqSTT:
 
     Groq's Whisper endpoints have a free tier (rate-limited); no OpenRouter
     balance requirement. The API is OpenAI-style multipart (`file` + `model`),
-    so this is a plain httpx call with no extra SDK dependency.
+    so this is a plain httpx call with no extra SDK dependency. When a
+    `key_pool` is given, a 429 parks the current key and the request is retried
+    with the next one.
     """
 
     def __init__(
@@ -68,32 +71,52 @@ class GroqSTT:
         model: str = "whisper-large-v3-turbo",
         timeout_seconds: float = 90.0,
         http: httpx.AsyncClient | None = None,
+        key_pool: GroqKeyPool | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._http = http or httpx.AsyncClient(timeout=timeout_seconds)
+        self._key_pool = key_pool
+
+    def _key(self) -> str:
+        if self._key_pool is not None:
+            key = self._key_pool.current()
+            if key is None:
+                raise RuntimeError(
+                    "All Groq API keys are exhausted (daily token caps); try again after the reset"
+                )
+            return key
+        return self._api_key
 
     async def transcribe(self, source: FileData) -> str:
         fmt = OpenRouterMediaAI._audio_format(source)
         filename = f"voice.{fmt}"
         mime = source.mime_type or "application/octet-stream"
-        headers = {"Authorization": f"Bearer {self._api_key}"}
-        try:
-            response = await self._http.post(
-                _GROQ_TRANSCRIPTIONS_URL,
-                data={"model": self._model},
-                headers=headers,
-                files={"file": (filename, source.raw, mime)},
-            )
-        except httpx.HTTPError as exc:
-            raise RuntimeError(f"Groq STT request failed: {exc}") from exc
-        if response.status_code >= 400:
-            raise RuntimeError(f"Groq STT error {response.status_code}: {response.text[:200]}")
-        payload = response.json()
-        text = (payload.get("text") or "").strip()
-        if not text:
-            raise RuntimeError("Groq STT returned empty transcription")
-        return text
+        for attempt in range(2):
+            key = self._key()
+            headers = {"Authorization": f"Bearer {key}"}
+            try:
+                response = await self._http.post(
+                    _GROQ_TRANSCRIPTIONS_URL,
+                    data={"model": self._model},
+                    headers=headers,
+                    files={"file": (filename, source.raw, mime)},
+                )
+            except httpx.HTTPError as exc:
+                raise RuntimeError(f"Groq STT request failed: {exc}") from exc
+            if response.status_code == 429 and self._key_pool is not None and attempt == 0:
+                self._key_pool.mark_exhausted(key)
+                continue
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    f"Groq STT error {response.status_code}: {response.text[:200]}"
+                )
+            payload = response.json()
+            text = (payload.get("text") or "").strip()
+            if not text:
+                raise RuntimeError("Groq STT returned empty transcription")
+            return text
+        raise RuntimeError("Groq STT exhausted every API key")
 
 
 class OpenRouterMediaAI:
@@ -206,7 +229,8 @@ class GroqVision:
 
     Same wire shape as OpenRouterMediaAI.describe (model, messages with an
     `image_url` data URI), so it is a drop-in VisionAnalyzer. Free tier, no
-    OpenRouter balance requirement.
+    OpenRouter balance requirement. With a `key_pool`, a 429 parks the current
+    key and the next key is used for the retry.
     """
 
     def __init__(
@@ -216,10 +240,23 @@ class GroqVision:
         model: str = "qwen/qwen3.6-27b",
         timeout_seconds: float = 60.0,
         http: httpx.AsyncClient | None = None,
+        key_pool: GroqKeyPool | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._http = http or httpx.AsyncClient(timeout=timeout_seconds)
+        self._key_pool = key_pool
+
+    def _key(self) -> str:
+        if self._key_pool is not None:
+            key = self._key_pool.current()
+            if key is None:
+                raise RuntimeError(
+                    "All Groq API keys are exhausted (daily token caps); "
+                    "try again after the reset"
+                )
+            return key
+        return self._api_key
 
     async def describe(self, data: FileData) -> str:
         mime = OpenRouterMediaAI._image_mime(data)
@@ -239,22 +276,36 @@ class GroqVision:
                 }
             ],
         }
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
-        try:
-            response = await self._http.post(_GROQ_CHAT_URL, json=body, headers=headers)
-        except httpx.HTTPError as exc:
-            raise RuntimeError(f"Groq vision request failed: {exc}") from exc
-        if response.status_code >= 400:
-            raise RuntimeError(f"Groq vision error {response.status_code}: {response.text[:200]}")
-        payload = response.json()
-        choice = (payload.get("choices") or [{}])[0]
-        text = ((choice.get("message") or {}).get("content") or "").strip()
-        if not text:
-            raise RuntimeError("Groq vision returned empty description")
-        return _strip_reasoning(text)
+        for attempt in range(2):
+            key = self._key()
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            }
+            try:
+                response = await self._http.post(
+                    _GROQ_CHAT_URL, json=body, headers=headers
+                )
+            except httpx.HTTPError as exc:
+                raise RuntimeError(f"Groq vision request failed: {exc}") from exc
+            if (
+                response.status_code == 429
+                and self._key_pool is not None
+                and attempt == 0
+            ):
+                self._key_pool.mark_exhausted(key)
+                continue
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    f"Groq vision error {response.status_code}: {response.text[:200]}"
+                )
+            payload = response.json()
+            choice = (payload.get("choices") or [{}])[0]
+            text = ((choice.get("message") or {}).get("content") or "").strip()
+            if not text:
+                raise RuntimeError("Groq vision returned empty description")
+            return _strip_reasoning(text)
+        raise RuntimeError("Groq vision exhausted every API key")
 
 
 class VisionFallback:

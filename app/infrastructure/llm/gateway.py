@@ -18,6 +18,7 @@ import httpx
 
 from app.application.agent.ports import LLMGateway, LLMResponse, LLMToolCall
 from app.core.logging import get_logger
+from app.infrastructure.llm.keys import GroqKeyPool
 from app.infrastructure.llm.models_registry import FreeModelRegistry
 
 logger = get_logger(__name__)
@@ -52,6 +53,7 @@ class OpenRouterGateway(LLMGateway):
         skip_seconds: int = 600,
         rate_limit_skip_seconds: int = 60,
         registry: FreeModelRegistry | None = None,
+        key_pool: GroqKeyPool | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url
@@ -75,6 +77,8 @@ class OpenRouterGateway(LLMGateway):
         # a parsed reasoning format for tool calling; gpt-oss must not get
         # either parameter).
         self._extra_body: dict[str, dict[str, Any]] = {}
+        # Multi-key failover pool (Groq). None keeps the single-key behavior.
+        self._key_pool = key_pool
 
     async def _sync_registry(self) -> None:
         if self._registry is None:
@@ -192,8 +196,13 @@ class OpenRouterGateway(LLMGateway):
     async def _post(
         self, body: dict[str, Any]
     ) -> tuple[dict[str, Any], str | None, dict[str, Any], str | None]:
+        key: str | None = self._key_pool.current() if self._key_pool else self._api_key
+        if key is None:
+            raise LLMGatewayError(
+                "All Groq API keys are exhausted (daily token caps); try again after the reset"
+            )
         headers = {
-            "Authorization": f"Bearer {self._api_key}",
+            "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
         }
         try:
@@ -210,6 +219,15 @@ class OpenRouterGateway(LLMGateway):
         except httpx.HTTPError as exc:
             raise LLMGatewayError(f"LLM request failed: {exc}") from exc
 
+        if (
+            response.status_code == 429
+            and key is not None
+            and self._key_pool is not None
+            and len(self._key_pool.keys) > 1
+        ):
+            # Daily caps are per account: only fail over when a spare key
+            # exists — a single key still retries like any transient error.
+            self._key_pool.mark_exhausted(key)
         if response.status_code == 429 or response.status_code >= 500:
             raise LLMGatewayTransientError(
                 f"LLM provider transient error {response.status_code}: {response.text[:200]}",
@@ -279,7 +297,9 @@ class GroqGateway(OpenRouterGateway):
     is stable. Qwen models get `reasoning_effort: "none"` (their thinking eats
     the reply budget and is not the deliverable) plus `reasoning_format:
     "parsed"`, which Groq requires for tool calling; gpt-oss models must not
-    receive either parameter, so they are applied per-model.
+    receive either parameter, so they are applied per-model. When a `key_pool`
+    is provided, rate-limited (429) keys are parked and the next key is used
+    for the retry — one key per request, switching only on exhaustion.
     """
 
     def __init__(
@@ -293,6 +313,7 @@ class GroqGateway(OpenRouterGateway):
         http: httpx.AsyncClient | None = None,
         skip_seconds: int = 600,
         rate_limit_skip_seconds: int = 60,
+        key_pool: GroqKeyPool | None = None,
     ) -> None:
         super().__init__(
             api_key,
@@ -305,6 +326,7 @@ class GroqGateway(OpenRouterGateway):
             skip_seconds=skip_seconds,
             rate_limit_skip_seconds=rate_limit_skip_seconds,
             registry=None,
+            key_pool=key_pool or GroqKeyPool([api_key]),
         )
         for candidate in self._models:
             if "qwen" in candidate:

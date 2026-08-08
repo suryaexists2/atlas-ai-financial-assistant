@@ -592,6 +592,34 @@ async def test_groq_vision_strips_unterminated_reasoning_block():
     assert result == ""
 
 
+async def test_groq_vision_switches_key_on_ratelimit():
+    import httpx
+
+    from app.infrastructure.ingestion.media_ai import GroqVision
+    from app.infrastructure.llm.keys import GroqKeyPool
+
+    pool = GroqKeyPool(["key-1", "key-2"])
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        auth = request.headers["authorization"]
+        seen.append(auth)
+        if auth == "Bearer key-1":
+            return httpx.Response(429, text="rate limited")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "A chart titled Sales."}}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http:
+        vision = GroqVision("ignored", http=http, key_pool=pool)
+        data = FileData(raw=b"png-bytes", mime_type="image/png")
+        assert await vision.describe(data) == "A chart titled Sales."
+    assert seen == ["Bearer key-1", "Bearer key-2"]
+    assert pool.current() == "key-2"
+
+
 async def test_groq_vision_http_error_raises():
     import httpx
 

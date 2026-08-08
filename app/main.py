@@ -85,23 +85,30 @@ def _build_media_ingestor(settings: Settings, bot):
         vision = media_ai
     # Image vision falls back to the free Groq tier when the OpenRouter route
     # fails (402 on exhausted balance). STT stays as configured below.
-    if settings.groq_api_key:
+    groq_keys = settings.groq_api_keys or (
+        [settings.groq_api_key] if settings.groq_api_key else []
+    )
+    if groq_keys:
         from app.infrastructure.ingestion.media_ai import GroqVision, VisionFallback
+        from app.infrastructure.llm.keys import GroqKeyPool
 
+        groq_key_pool = GroqKeyPool(groq_keys)
         groq_vision = GroqVision(
-            settings.groq_api_key,
+            groq_keys[0],
             model=settings.groq_vision_model,
             timeout_seconds=settings.vision_timeout_seconds,
+            key_pool=groq_key_pool,
         )
         vision = (
             VisionFallback(vision, groq_vision) if vision is not None else groq_vision
         )
     if settings.stt_provider == "groq":
-        if settings.groq_api_key:
+        if groq_keys:
             stt = GroqSTT(
-                settings.groq_api_key,
+                groq_keys[0],
                 model=settings.groq_stt_model,
                 timeout_seconds=settings.stt_timeout_seconds,
+                key_pool=groq_key_pool,
             )
     elif media_ai is not None:
         stt = media_ai
@@ -168,9 +175,14 @@ def _build_chat_gateway(settings: Settings):
     )
 
     groq_gateway = None
-    if settings.groq_api_key:
+    groq_keys = settings.groq_api_keys or (
+        [settings.groq_api_key] if settings.groq_api_key else []
+    )
+    if groq_keys:
+        from app.infrastructure.llm.keys import GroqKeyPool
+
         groq_gateway = GroqGateway(
-            settings.groq_api_key,
+            groq_keys[0],
             settings.groq_llm_model,
             timeout_seconds=settings.llm_timeout_seconds,
             max_retries=settings.llm_max_retries,
@@ -179,6 +191,7 @@ def _build_chat_gateway(settings: Settings):
             ),
             skip_seconds=settings.llm_model_skip_seconds,
             rate_limit_skip_seconds=settings.llm_rate_limit_skip_seconds,
+            key_pool=GroqKeyPool(groq_keys),
         )
 
     openrouter_gateway = None

@@ -102,6 +102,10 @@ class Settings(BaseSettings):
     # console.groq.com) or "openrouter" (Whisper via OpenRouter, needs credit).
     stt_provider: Literal["openrouter", "groq"] = "groq"
     groq_api_key: str | None = Field(default=None, repr=False)
+    # Drop-in swap as an existing single key now that the primary gets capped:
+    # used by the key pool for chat + vision + speech on Groq. When present it
+    # takes precedence; `GROQ_API_KEY` remains the single-key fallback.
+    groq_api_keys: list[str] = Field(default_factory=list, repr=False)
     groq_stt_model: str = "whisper-large-v3-turbo"
     # Free-tier vision fallback used when the OpenRouter route fails (e.g. the
     # account balance is exhausted and every model 402s). qwen3.6-27b is the
