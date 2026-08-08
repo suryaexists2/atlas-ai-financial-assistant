@@ -5,10 +5,10 @@ No module reads `os.environ` directly — everything funnels through `Settings`.
 """
 
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -105,7 +105,16 @@ class Settings(BaseSettings):
     # Drop-in swap as an existing single key now that the primary gets capped:
     # used by the key pool for chat + vision + speech on Groq. When present it
     # takes precedence; `GROQ_API_KEY` remains the single-key fallback.
-    groq_api_keys: list[str] = Field(default_factory=list, repr=False)
+    groq_api_keys: Annotated[list[str], NoDecode] = Field(default_factory=list, repr=False)
+
+    @field_validator("groq_api_keys", mode="before")
+    @classmethod
+    def _split_groq_api_keys(cls, value):
+        # Env vars deliver plain comma-separated strings; pydantic-settings
+        # would otherwise demand a JSON list and crash the boot.
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
     groq_stt_model: str = "whisper-large-v3-turbo"
     # Free-tier vision fallback used when the OpenRouter route fails (e.g. the
     # account balance is exhausted and every model 402s). qwen3.6-27b is the
