@@ -26,6 +26,10 @@ logger = get_logger(__name__)
 _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
+# Serialises gateway completions so concurrent turns cannot burst the same
+# per-minute TPM window on the active key (see FailoverGateway docstring).
+_COMPLETION_LOCK = asyncio.Lock()
+
 
 class LLMGatewayError(RuntimeError):
     """Raised when the LLM provider cannot complete a request."""
@@ -370,6 +374,11 @@ class FailoverGateway(LLMGateway):
     Keeps the agent alive when one provider rate-limits or runs out of credits
     (e.g. Groq free tier -> OpenRouter free chain). Only `LLMGatewayError`
     failures trigger the switch; success on either side is returned as-is.
+
+    Turn concurrency is serialised: parallel turns would each pick the same
+    (priority) key and collectively burst its per-minute TPM window, which is
+    what the rotation cannot fix. One gateway completion at a time means one
+    turn per key window per minute.
     """
 
     def __init__(self, primary: LLMGateway, backup: LLMGateway) -> None:
@@ -377,6 +386,22 @@ class FailoverGateway(LLMGateway):
         self._backup = backup
 
     async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 600,
+        temperature: float = 0.3,
+    ) -> LLMResponse:
+        async with _COMPLETION_LOCK:
+            return await self._run(
+                messages,
+                tools=tools,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+
+    async def _run(
         self,
         messages: list[dict[str, Any]],
         *,
