@@ -90,11 +90,11 @@ def build_system_prompt() -> str:
 # Maximum characters of history per message. Keeps the prompt inside cheap
 # model context budgets (free-tier Groq routes cap input tokens) while
 # preserving the gist of recent turns.
-_MAX_HISTORY_CHARS = 300
+_MAX_HISTORY_CHARS = 240
 # Media (image/voice/doc) extraction is longer than chat by nature; it is
 # bounded here because free-tier Groq routes cap input tokens per minute, and
 # a handful of image messages in history would otherwise exceed the window.
-_MEDIA_MAX_CHARS = 450
+_MEDIA_MAX_CHARS = 380
 # Qwen-style <think> blocks are model chatter, not the deliverable: legacy
 # stored excerpts may contain them, so strip before capping.
 _MEDIA_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)

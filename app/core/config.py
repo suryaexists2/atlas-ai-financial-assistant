@@ -152,7 +152,7 @@ class Settings(BaseSettings):
     google_oauth_state_ttl_minutes: int = 10
 
     # --- Agent Core ---
-    agent_max_tool_rounds: int = 5
+    agent_max_tool_rounds: int = 1
     agent_context_max_messages: int = 24
     agent_fallback_reply: str = "Sorry — I hit a temporary hiccup. Give me a moment and try again."
     # While true, fallback replies carry the real failure reason (debug only).

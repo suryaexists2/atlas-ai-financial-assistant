@@ -125,7 +125,7 @@ async def test_context_caps_and_strips_thinking_from_media(uow, demo_user):
     assert user_msgs
     assert "thinking" not in user_msgs[0]
     assert user_msgs[0].startswith("[image contents]")
-    assert len(user_msgs[0]) <= 450 + 3
+    assert len(user_msgs[0]) <= 380 + 3
 
 
 @pytest.mark.asyncio
@@ -201,7 +201,7 @@ async def test_context_truncates_long_history_messages(uow, demo_user):
         messages = await build_messages(uow, user_id=user_id, conversation_id=conversation_id)
     history = [m for m in messages if m["role"] == "assistant"]
     assert history, "history message must be present"
-    assert len(history[0]["content"]) <= 310, "long content must be truncated"
+    assert len(history[0]["content"]) <= 250, "long content must be truncated"
     assert history[0]["content"].endswith("…")
 
 
