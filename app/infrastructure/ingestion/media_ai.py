@@ -17,7 +17,11 @@ import base64
 
 import httpx
 
+from app.application.ingestion.pipeline import VisionAnalyzer
 from app.application.ingestion.types import FileData
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 _AUDIO_TRANSCRIPTIONS_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
 _CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -35,6 +39,7 @@ _VISION_PROMPT = (
 
 
 _GROQ_TRANSCRIPTIONS_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+_GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
 class GroqSTT:
@@ -185,4 +190,80 @@ class OpenRouterMediaAI:
         return "image/jpeg"
 
 
-__all__ = ["GroqSTT", "OpenRouterMediaAI"]
+class GroqVision:
+    """Free image describe/OCR via Groq's OpenAI-compatible chat completions.
+
+    Same wire shape as OpenRouterMediaAI.describe (model, messages with an
+    `image_url` data URI), so it is a drop-in VisionAnalyzer. Free tier, no
+    OpenRouter balance requirement.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str = "meta-llama/llama-3.2-11b-vision-preview",
+        timeout_seconds: float = 60.0,
+        http: httpx.AsyncClient | None = None,
+    ) -> None:
+        self._api_key = api_key
+        self._model = model
+        self._http = http or httpx.AsyncClient(timeout=timeout_seconds)
+
+    async def describe(self, data: FileData) -> str:
+        mime = OpenRouterMediaAI._image_mime(data)
+        data_uri = f"data:{mime};base64," + base64.b64encode(data.raw).decode("ascii")
+        body = {
+            "model": self._model,
+            "max_tokens": 1500,
+            "temperature": 0.0,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": _VISION_PROMPT},
+                        {"type": "image_url", "image_url": {"url": data_uri}},
+                    ],
+                }
+            ],
+        }
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            response = await self._http.post(_GROQ_CHAT_URL, json=body, headers=headers)
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Groq vision request failed: {exc}") from exc
+        if response.status_code >= 400:
+            raise RuntimeError(f"Groq vision error {response.status_code}: {response.text[:200]}")
+        payload = response.json()
+        choice = (payload.get("choices") or [{}])[0]
+        text = ((choice.get("message") or {}).get("content") or "").strip()
+        if not text:
+            raise RuntimeError("Groq vision returned empty description")
+        return text
+
+
+class VisionFallback:
+    """Tries the primary vision provider and falls back to a secondary one.
+
+    OpenRouter routes 402 when the account balance is exhausted; the fallback
+    keeps image describe/OCR working on the free Groq tier. When both fail the
+    secondary's error is re-raised so the ingestion pipeline records it
+    gracefully.
+    """
+
+    def __init__(self, primary: VisionAnalyzer, fallback: VisionAnalyzer) -> None:
+        self._primary = primary
+        self._fallback = fallback
+
+    async def describe(self, data: FileData) -> str:
+        try:
+            return await self._primary.describe(data)
+        except Exception as primary_exc:  # noqa: BLE001 - provider failures switch providers
+            logger.warning("vision_primary_failed_using_fallback", error=str(primary_exc))
+        return await self._fallback.describe(data)
+
+
+__all__ = ["GroqSTT", "GroqVision", "OpenRouterMediaAI", "VisionFallback"]

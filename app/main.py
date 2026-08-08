@@ -83,6 +83,19 @@ def _build_media_ingestor(settings: Settings, bot):
             timeout_seconds=max(settings.stt_timeout_seconds, settings.vision_timeout_seconds),
         )
         vision = media_ai
+    # Image vision falls back to the free Groq tier when the OpenRouter route
+    # fails (402 on exhausted balance). STT stays as configured below.
+    if settings.groq_api_key:
+        from app.infrastructure.ingestion.media_ai import GroqVision, VisionFallback
+
+        groq_vision = GroqVision(
+            settings.groq_api_key,
+            model=settings.groq_vision_model,
+            timeout_seconds=settings.vision_timeout_seconds,
+        )
+        vision = (
+            VisionFallback(vision, groq_vision) if vision is not None else groq_vision
+        )
     if settings.stt_provider == "groq":
         if settings.groq_api_key:
             stt = GroqSTT(

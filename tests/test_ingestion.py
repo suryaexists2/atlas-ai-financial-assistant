@@ -456,3 +456,147 @@ async def test_groq_stt_plugs_into_pipeline():
         assert result.ok
         assert result.document.kind is DocumentKind.VOICE
         assert "compare TSLA and NVDA" in result.document.text
+
+
+async def test_groq_vision_sends_openai_compatible_body():
+    """Wire shape: Groq chat endpoint, Bearer auth, OpenAI-style messages with a
+    base64 `image_url` data URI."""
+    import httpx
+
+    from app.infrastructure.ingestion.media_ai import GroqVision
+
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["auth"] = request.headers.get("authorization")
+        body = json.loads(request.content)
+        captured["model"] = body["model"]
+        content = body["messages"][0]["content"]
+        captured["has_text"] = any(part.get("type") == "text" for part in content)
+        img = next(part for part in content if part.get("type") == "image_url")
+        captured["data_uri"] = img["image_url"]["url"].startswith("data:image/png;base64,")
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": "A chart titled Growth."}}]}
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http:
+        vision = GroqVision("groq-test-key", http=http)
+        data = FileData(raw=b"png-bytes", mime_type="image/png")
+        assert await vision.describe(data) == "A chart titled Growth."
+    assert captured["path"] == "/openai/v1/chat/completions"
+    assert captured["auth"] == "Bearer groq-test-key"
+    assert captured["model"] == "meta-llama/llama-3.2-11b-vision-preview"
+    assert captured["has_text"]
+    assert captured["data_uri"]
+
+
+async def test_groq_vision_empty_raises():
+    import httpx
+
+    from app.infrastructure.ingestion.media_ai import GroqVision
+
+    transport = httpx.MockTransport(
+        lambda req: httpx.Response(200, json={"choices": [{"message": {"content": ""}}]})
+    )
+    async with httpx.AsyncClient(transport=transport) as http:
+        vision = GroqVision("groq-test-key", http=http)
+        data = FileData(raw=b"png-bytes", mime_type="image/png")
+        with pytest.raises(RuntimeError, match="empty description"):
+            await vision.describe(data)
+
+
+async def test_groq_vision_http_error_raises():
+    import httpx
+
+    from app.infrastructure.ingestion.media_ai import GroqVision
+
+    transport = httpx.MockTransport(lambda req: httpx.Response(402, json={"error": "nope"}))
+    async with httpx.AsyncClient(transport=transport) as http:
+        vision = GroqVision("groq-test-key", http=http)
+        data = FileData(raw=b"png-bytes", mime_type="image/png")
+        with pytest.raises(RuntimeError, match="402"):
+            await vision.describe(data)
+
+
+async def test_vision_fallback_primary_success_skips_fallback():
+    from app.infrastructure.ingestion.media_ai import VisionFallback
+
+    calls = []
+
+    class Primary:
+        async def describe(self, data):
+            calls.append("primary")
+            return "primary description"
+
+    class Secondary:
+        async def describe(self, data):
+            calls.append("secondary")
+            return "secondary description"
+
+    fallback = VisionFallback(Primary(), Secondary())
+    data = FileData(raw=b"png-bytes", mime_type="image/png")
+    assert await fallback.describe(data) == "primary description"
+    assert calls == ["primary"]
+
+
+async def test_vision_fallback_uses_secondary_on_primary_failure():
+    from app.infrastructure.ingestion.media_ai import VisionFallback
+
+    calls = []
+
+    class Primary:
+        async def describe(self, data):
+            calls.append("primary")
+            raise RuntimeError("primary exploded")
+
+    class Secondary:
+        async def describe(self, data):
+            calls.append("secondary")
+            return "secondary description"
+
+    fallback = VisionFallback(Primary(), Secondary())
+    data = FileData(raw=b"png-bytes", mime_type="image/png")
+    assert await fallback.describe(data) == "secondary description"
+    assert calls == ["primary", "secondary"]
+
+
+async def test_vision_fallback_raises_when_both_fail():
+    from app.infrastructure.ingestion.media_ai import VisionFallback
+
+    class Primary:
+        async def describe(self, data):
+            raise RuntimeError("primary exploded")
+
+    class Secondary:
+        async def describe(self, data):
+            raise RuntimeError("secondary exploded")
+
+    fallback = VisionFallback(Primary(), Secondary())
+    data = FileData(raw=b"png-bytes", mime_type="image/png")
+    with pytest.raises(RuntimeError, match="secondary exploded"):
+        await fallback.describe(data)
+
+
+async def test_groq_vision_plugs_into_pipeline():
+    """The free Groq vision is a drop-in VisionAnalyzer for the ingestion
+    pipeline (regression: image route failed with an empty/error result when the
+    OpenRouter balance was exhausted)."""
+    import httpx
+
+    from app.infrastructure.ingestion.media_ai import GroqVision
+
+    transport = httpx.MockTransport(
+        lambda req: httpx.Response(
+            200, json={"choices": [{"message": {"content": "A chart titled Growth."}}]}
+        )
+    )
+    async with httpx.AsyncClient(transport=transport) as http:
+        vision = GroqVision("groq-test-key", http=http)
+        data = FileData(raw=b"png-bytes", mime_type="image/png", filename="chart.png")
+        pipeline = make_pipeline(FakeFetcher(data), vision=vision)
+        result = await pipeline.process(file_id="im1", mime_type="image/png", filename=None)
+        assert result.ok
+        assert result.document.kind is DocumentKind.IMAGE
+        assert "A chart titled Growth" in result.document.text
