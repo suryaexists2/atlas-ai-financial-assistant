@@ -9,6 +9,16 @@ from app.application.agent.core import AgentCore
 from app.application.agent.tools import ToolContext
 from app.application.onboarding import OnboardingEngine, OnboardingReply
 from app.application.reset import reset_turn
+from app.application.router import (
+    COMPLEX,
+    CONFIRM,
+    GOOGLE,
+    GREETING,
+    SCOPE,
+    TEMPLATE_INTENTS,
+    classify,
+    template_reply,
+)
 from app.domain.enums import MessageRole
 from app.infrastructure.providers.finnhub import FinnhubClient
 from app.infrastructure.providers.sec import SecEdgarClient
@@ -90,6 +100,27 @@ def identity_reply(text: str | None) -> str | None:
     return _IDENTITY_REPLY if _IDENTITY_RE.search(text) else None
 
 
+async def _google_connected(ctx: ReplyContext) -> bool:
+    """True when at least one Google connector is linked (Gmail/Calendar/
+    Drive/Sheets), so the deterministic google-not-connected reply only
+    fires for genuinely unconnected users."""
+    from app.domain.enums import IntegrationProvider
+
+    for provider in (IntegrationProvider.GMAIL, IntegrationProvider.CALENDAR,
+                     IntegrationProvider.DRIVE, IntegrationProvider.SHEETS):
+        link = await ctx.uow.integrations.get_by_provider(ctx.user_id, provider)
+        if link is not None:
+            return True
+    return False
+
+
+_GOOGLE_NOT_CONNECTED_REPLY = (
+    "Your Google account isn't connected yet — so I can't read your Gmail, "
+    "Calendar, or Drive right now. Send 'connect google' and I'll give you "
+    "the Connect button (takes about 30 seconds, read-only access)."
+)
+
+
 class AgentComposer:
     """Runs conversational onboarding until the user is set up, then hands off
     to the agent. Onboarding is invisible once completed."""
@@ -161,6 +192,24 @@ class AgentComposer:
             if onboarding_reply.notice:
                 return f"{onboarding_reply.notice}\n\n{identity}"
             return identity
+
+        # Deterministic intent routing: fixed templates first (zero LLM cost),
+        # then scoped agent turns. Media messages always reach the agent with
+        # the fullest context; a caption like "hi" on a file is still a file.
+        intent = classify(ctx.message.combined_text, is_media=ctx.message.is_media)
+        if ctx.message.is_media and intent in (GREETING, CONFIRM, SCOPE):
+            intent = COMPLEX
+        ctx.note["intent"] = intent
+        if intent in TEMPLATE_INTENTS:
+            return template_reply(intent)
+
+        # Google intents are handled deterministically when nothing is
+        # connected yet — no LLM turn needed to say "connect first".
+        if intent == GOOGLE and not ctx.message.is_media:
+            connected = await _google_connected(ctx)
+            if not connected:
+                return _GOOGLE_NOT_CONNECTED_REPLY
+
         # Onboarding already done (or a question exited it): run the agent.
         tool_ctx = ToolContext(
             uow=ctx.uow,
@@ -179,6 +228,7 @@ class AgentComposer:
             user_id=ctx.user_id,
             conversation_id=ctx.conversation_id,
             tool_context=tool_ctx,
+            intent=intent,
         )
         if onboarding_reply.notice and reply:
             # First-time user who skipped onboarding (question-first, media-

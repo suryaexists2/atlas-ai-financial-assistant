@@ -99,6 +99,12 @@ _CURRENT_MEDIA_MAX_CHARS = 1_500
 # stored excerpts may contain them, so strip before capping.
 _MEDIA_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
+# Scoped (router) intents keep a lean context: only the facts their tool
+# group needs. `complex` keeps the full profile/watchlist/memory stack.
+_SCOPED_INTENTS = frozenset(
+    {"market", "watchlist", "alerts", "reminders", "documents", "google"}
+)
+
 
 def _trim_media_content(content: str, cap: int = _MEDIA_MAX_CHARS) -> str:
     """Strips reasoning chatter and caps media excerpts for the context."""
@@ -114,9 +120,22 @@ async def build_messages(
     user_id: uuid.UUID,
     conversation_id: uuid.UUID,
     max_messages: int = 24,
+    intent: str = "complex",
 ) -> list[dict[str, Any]]:
-    """Assembles [system, (context facts), ...recent conversation] for the LLM."""
+    """Assembles [system, (context facts), ...recent conversation] for the LLM.
+
+    When `intent` names a scoped task (market, watchlist, alerts, reminders,
+    documents, google), the turn keeps only the context facts that task needs
+    plus a short scope line; the full profile/watchlist/memory stack is
+    reserved for `complex` turns where the model may need anything.
+    """
     messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    scoped = intent in _SCOPED_INTENTS
+    full = not scoped
+    wants_market = intent in ("market", "watchlist")
+    wants_google = intent in ("google", "documents")
+    wants_memories = intent in ("complex", "market", "google")
 
     profile = await uow.profiles.get_by_user_id(user_id)
     if profile is not None and (profile.interests or profile.role):
@@ -128,25 +147,35 @@ async def build_messages(
         messages.append({"role": "system", "content": "User profile: " + "; ".join(parts)})
 
     watchlist = await uow.watchlist.list_active(user_id)
-    if watchlist:
+    if watchlist and (full or wants_market):
         symbols = ", ".join(item.symbol for item in watchlist)
         messages.append({"role": "system", "content": f"User watchlist: {symbols}"})
 
-    memories = await uow.memories.list_active(user_id, limit=20)
-    if memories:
-        lines = [f"- {m.summary}" for m in memories if m.summary]
-        if lines:
+    if full or wants_memories:
+        memories = await uow.memories.list_active(user_id, limit=20)
+        if memories:
+            lines = [f"- {m.summary}" for m in memories if m.summary]
+            if lines:
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": "Known facts about the user:\n" + "\n".join(lines),
+                    }
+                )
+
+    if full or wants_google:
+        connected = await _connected_accounts(uow, user_id)
+        if connected:
             messages.append(
-                {
-                    "role": "system",
-                    "content": "Known facts about the user:\n" + "\n".join(lines),
-                }
+                {"role": "system", "content": f"User connected accounts: {', '.join(connected)}"}
             )
 
-    connected = await _connected_accounts(uow, user_id)
-    if connected:
+    if scoped:
         messages.append(
-            {"role": "system", "content": f"User connected accounts: {', '.join(connected)}"}
+            {
+                "role": "system",
+                "content": f"Scope for this turn: {intent} task only.",
+            }
         )
 
     history = await uow.conversations.list_messages(conversation_id, limit=max_messages)

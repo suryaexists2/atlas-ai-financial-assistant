@@ -307,6 +307,11 @@ class OpenRouterGateway(LLMGateway):
                     id=raw.get("id", ""),
                     name=function.get("name", ""),
                     arguments=parsed,
+                    extra={
+                        key: value
+                        for key, value in raw.items()
+                        if key != "function"
+                    },
                 )
             )
         content = message.get("content")

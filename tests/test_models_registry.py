@@ -258,16 +258,17 @@ def test_config_defaults_resilient_chain():
     assert settings.llm_max_tokens == 320
     assert settings.llm_dynamic_free_models is True
     assert settings.llm_model_skip_seconds == 600
+    assert settings.gemini_skip_seconds == 120
     assert settings.llm_free_min_context == 32_000
 
 
 def test_config_defaults_groq_stack():
     settings = Settings(_env_file=None)
-    assert settings.llm_provider == "groq"
+    assert settings.llm_provider == "gemini"
     assert settings.groq_llm_model == "openai/gpt-oss-120b"
     assert settings.groq_llm_fallback == "qwen/qwen3.6-27b"
     assert settings.stt_provider == "groq"
     assert settings.groq_stt_model == "whisper-large-v3-turbo"
     assert settings.vision_model == "google/gemma-4-26b-a4b-it:free"
-    assert settings.gemini_api_key is None
-    assert settings.gemini_llm_model == "gemini-2.0-flash"
+    assert settings.gemini_api_key is not None
+    assert settings.gemini_llm_model == "gemini-3.6-flash"

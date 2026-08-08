@@ -79,8 +79,13 @@ class AgentCore:
         user_id: uuid.UUID,
         conversation_id: uuid.UUID,
         tool_context: ToolContext | None = None,
+        intent: str = "complex",
     ) -> str:
-        """Runs a turn and always returns a reply string (fallback on failure)."""
+        """Runs a turn and always returns a reply string (fallback on failure).
+
+        `intent` (from the deterministic router) picks the tool group and the
+        context scope for the turn; "complex" keeps the full toolset and full
+        context."""
         self.last_error = None
         self.last_model = None
         started = asyncio.get_running_loop().time()
@@ -89,12 +94,19 @@ class AgentCore:
             user_id=user_id,
             conversation_id=conversation_id,
             max_messages=self._max_context_messages,
+            intent=intent,
         )
         logger.info(
             "agent_context_built",
             ms=round((asyncio.get_running_loop().time() - started) * 1000),
             n_messages=len(messages),
         )
+        # Gemini's OpenAI-compatible endpoint rejects requests that end on a
+        # model turn. In production the current user message is always the
+        # last persisted entry, but guard against history that ends on
+        # assistant (and tool-result sequences that would end on a tool).
+        if messages and messages[-1].get("role") not in ("user", "tool"):
+            messages.append({"role": "user", "content": "Go on."})
         tool_ctx = tool_context or ToolContext(uow=uow, user_id=user_id)
 
         any_tool_called = False
@@ -105,7 +117,9 @@ class AgentCore:
                 try:
                     response = await self._gateway.complete(
                         messages,
-                        tools=self._tools.schemas(),
+                        tools=self._tools.schemas([intent])
+                        if intent != "complex"
+                        else self._tools.schemas(),
                         max_tokens=self._max_tokens,
                         temperature=self._temperature,
                     )
@@ -168,6 +182,7 @@ class AgentCore:
                                 "name": call.name,
                                 "arguments": json.dumps(call.arguments),
                             },
+                            **call.extra,  # e.g. Gemini thought_signature
                         }
                         for call in response.tool_calls
                     ],

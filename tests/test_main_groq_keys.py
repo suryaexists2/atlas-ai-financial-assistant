@@ -33,13 +33,14 @@ def test_groq_keys_default_fallback_when_nothing_set():
 
 
 def test_build_chat_gateway_chain_groq_gemini_openrouter():
-    """With a Gemini key configured the chain becomes Groq -> Gemini ->
-    OpenRouter, so Gemini absorbs the turn before the OpenRouter free route."""
+    """`llm_provider="groq"` chain is Groq -> Gemini -> OpenRouter, so Gemini
+    absorbs the turn before the OpenRouter free route."""
     from app.infrastructure.llm.gateway import FailoverGateway, GeminiGateway
     from app.main import _build_chat_gateway
 
     s = Settings(
         _env_file=None,
+        llm_provider="groq",
         groq_api_keys=["gsk_a"],
         openrouter_api_key="or_test",
         gemini_api_key="AIza_gem",
@@ -54,12 +55,44 @@ def test_build_chat_gateway_chain_groq_gemini_openrouter():
     )
 
 
-def test_build_chat_gateway_skips_gemini_without_key():
-    from app.infrastructure.llm.gateway import FailoverGateway
+def test_build_chat_gateway_gemini_fallback_key_always_present():
+    """The embedded Gemini fallback key means the groq provider chain always
+    has Gemini as the mid-tier backup, even with no env keys configured."""
+    from app.infrastructure.llm.gateway import FailoverGateway, GeminiGateway
     from app.main import _build_chat_gateway
 
-    s = Settings(_env_file=None, groq_api_keys=["gsk_a"], openrouter_api_key="or_test")
+    s = Settings(
+        _env_file=None,
+        llm_provider="groq",
+        groq_api_keys=["gsk_a"],
+        openrouter_api_key="or_test",
+    )
     gateway = _build_chat_gateway(s)
     assert isinstance(gateway, FailoverGateway)
     backup = gateway._backup
-    assert isinstance(backup, FailoverGateway) is False
+    assert isinstance(backup, FailoverGateway)
+    assert isinstance(backup._primary, GeminiGateway)
+
+
+def test_build_chat_gateway_gemini_primary():
+    """The default provider is now gemini: the chain becomes Gemini primary
+    with Groq -> OpenRouter as the backup."""
+    from app.infrastructure.llm.gateway import (
+        FailoverGateway,
+        GeminiGateway,
+        GroqGateway,
+    )
+    from app.main import _build_chat_gateway
+
+    s = Settings(
+        _env_file=None,
+        llm_provider="gemini",
+        groq_api_keys=["gsk_a"],
+        openrouter_api_key="or_test",
+    )
+    gateway = _build_chat_gateway(s)
+    assert isinstance(gateway, FailoverGateway)
+    assert isinstance(gateway._primary, GeminiGateway)
+    backup = gateway._backup
+    assert isinstance(backup, FailoverGateway)
+    assert isinstance(backup._primary, GroqGateway)

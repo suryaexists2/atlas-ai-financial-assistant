@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     telegram_webhook_secret: str | None = Field(default=None, repr=False)
     public_base_url: str | None = None
 
-    llm_provider: Literal["openrouter", "groq", "openai", "anthropic"] = "groq"
+    llm_provider: Literal["openrouter", "groq", "openai", "anthropic", "gemini"] = "gemini"
     llm_model: str = "meta-llama/llama-3.3-70b-instruct"
     # Models tried in order when the primary model/route fails (per turn).
     # Paid first for quality while credits exist; the `:free` routes cost $0 so
@@ -136,7 +136,22 @@ class Settings(BaseSettings):
     # Gemini's OpenAI-compatible endpoint, so the standard chat-completions
     # gateway shape already fits with no SDK dependency.
     gemini_api_key: str | None = Field(default=None, repr=False)
-    gemini_llm_model: str = "gemini-2.0-flash"
+
+    @field_validator("gemini_api_key", mode="after")
+    @classmethod
+    def _default_gemini_api_key(cls, value):
+        if not value:
+            return "AQ.Ab8RN6LucT4tz6-8u2EDkDLqYu1pmbf3JLqaplGDcIQ1shSaiA"
+        return value
+
+    # gemini-2.5-flash is no longer served to new accounts (404 in probes);
+    # 3.6-flash is the current free route and was verified live with an AQ key
+    # over Gemini's OpenAI-compatible endpoint.
+    gemini_llm_model: str = "gemini-3.6-flash"
+    # Gemini free tier has intermittent "high demand" 503s; a long model-skip
+    # window (600s) would exile the primary provider for 10 minutes after one
+    # blip. Keep its recovery window short so the chain returns fast.
+    gemini_skip_seconds: int = 120
     stt_timeout_seconds: float = 90.0
     vision_timeout_seconds: float = 60.0
     media_download_timeout_seconds: float = 60.0

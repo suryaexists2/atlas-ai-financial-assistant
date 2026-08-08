@@ -107,13 +107,21 @@ class Tool:
     required: list[str] = field(default_factory=list)
 
     def schema(self) -> dict[str, Any]:
+        parameters: dict[str, Any] = {
+            "type": "object",
+            "properties": self.parameters,
+        }
+        if self.required:
+            # `required` lives INSIDE the JSON-Schema parameters block (OpenAI
+            # standard). Groq tolerates either shape; Gemini's OpenAI-compatible
+            # endpoint rejects a top-level function.required.
+            parameters["required"] = self.required
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": {"type": "object", "properties": self.parameters},
-                **({"required": self.required} if self.required else {}),
+                "parameters": parameters,
             },
         }
 
@@ -122,8 +130,19 @@ class ToolRegistry:
     def __init__(self, tools: list[Tool]) -> None:
         self._tools = {tool.name: tool for tool in tools}
 
-    def schemas(self) -> list[dict[str, Any]]:
-        return [tool.schema() for tool in self._tools.values()]
+    def schemas(self, groups: list[str] | None = None) -> list[dict[str, Any]]:
+        """OpenAI tool schemas for every registered tool, or only the named
+        `groups`. `groups=None` (or `complex`) returns the full set."""
+        if not groups or groups == ["complex"]:
+            return [tool.schema() for tool in self._tools.values()]
+        # Memory tools stay available in every scoped turn: silent memory
+        # saving is a background behaviour, not a task group.
+        allowed = set(TOOL_GROUPS.get("memory", frozenset()))
+        for group in groups:
+            allowed |= TOOL_GROUPS.get(group, frozenset())
+        return [
+            tool.schema() for name, tool in self._tools.items() if name in allowed
+        ]
 
     def has(self, name: str) -> bool:
         return name in self._tools
@@ -1018,6 +1037,55 @@ _TOOL_SPECS: list[tuple[str, str, dict[str, str], tuple[str, ...]]] = [
 
 _UNUSUAL_HANDLERS = {"get_market_quote": _get_quote, "get_company_filings": _get_filings}
 
+# Tool groups map the deterministic router intents to the schemas allowed in
+# that scoped turn. `complex` (and `None`) keeps the full set; memory tools
+# are always merged in by schemas().
+TOOL_GROUPS: dict[str, frozenset[str]] = {
+    "market": frozenset({
+        "get_market_quote",
+        "get_company_profile",
+        "get_company_filings",
+        "get_market_news",
+        "get_market_indices",
+        "get_company_news",
+        "get_company_earnings",
+    }),
+    "watchlist": frozenset({
+        "list_watchlist",
+        "add_to_watchlist",
+        "remove_from_watchlist",
+    }),
+    "alerts": frozenset({
+        "create_price_alert",
+        "create_news_alert",
+        "create_filing_alert",
+        "list_alerts",
+        "delete_alert",
+    }),
+    "reminders": frozenset({
+        "create_daily_briefing",
+        "create_reminder",
+    }),
+    "documents": frozenset({
+        "get_document_contents",
+    }),
+    "google": frozenset({
+        "link_google_sheet",
+        "unlink_google_sheet",
+        "read_google_sheet",
+        "connect_google",
+        "disconnect_google",
+        "search_emails",
+        "find_calendar_events",
+        "schedule_meeting",
+        "read_drive_doc",
+    }),
+    "memory": frozenset({
+        "save_memory",
+        "list_memories",
+    }),
+}
+
 
 def _handler_for(name: str) -> ToolHandler:
     handler = _UNUSUAL_HANDLERS.get(name) or globals().get(f"_{name}")
@@ -1041,4 +1109,7 @@ def default_registry() -> ToolRegistry:
     return ToolRegistry(DEFAULT_TOOLS)
 
 
-__all__ = ["Tool", "ToolContext", "ToolRegistry", "DEFAULT_TOOLS", "default_registry"]
+__all__ = [
+    "Tool", "ToolContext", "ToolRegistry", "DEFAULT_TOOLS", "default_registry",
+    "TOOL_GROUPS",
+]

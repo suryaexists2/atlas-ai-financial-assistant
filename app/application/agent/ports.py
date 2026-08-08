@@ -15,6 +15,11 @@ class LLMToolCall:
     id: str
     name: str
     arguments: dict[str, Any]
+    # Provider-specific extras carried back into the follow-up request.
+    # Gemini's OpenAI-compatible endpoint returns a `thought_signature` per
+    # tool call (extra_content.google) and REQUIRES it on the replayed
+    # assistant message; other providers keep this empty.
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

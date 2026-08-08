@@ -150,8 +150,9 @@ class FakeAgent:
         self.calls = 0
         self.last_error = None
 
-    async def run(self, uow, *, user_id, conversation_id, tool_context=None):
+    async def run(self, uow, *, user_id, conversation_id, tool_context=None, intent="complex"):
         self.calls += 1
+        self.last_intent = intent
         return "agent reply"
 
 
