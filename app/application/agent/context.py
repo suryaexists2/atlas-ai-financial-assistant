@@ -8,6 +8,7 @@ exposes internal mechanics to the model beyond what the prompt states.
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
@@ -108,6 +109,21 @@ def build_system_prompt() -> str:
 # model context budgets (free-tier OpenRouter routes cap input tokens) while
 # preserving the gist of recent turns.
 _MAX_HISTORY_CHARS = 400
+# Media (image/voice/doc) extraction is longer than chat by nature; it is
+# bounded here because free-tier Groq routes cap input tokens per minute, and
+# a handful of image messages in history would otherwise exceed the window.
+_MEDIA_MAX_CHARS = 600
+# Qwen-style <think> blocks are model chatter, not the deliverable: legacy
+# stored excerpts may contain them, so strip before capping.
+_MEDIA_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _trim_media_content(content: str) -> str:
+    """Strips reasoning chatter and caps media excerpts for the context."""
+    content = _MEDIA_THINK_RE.sub("", content).strip()
+    if len(content) > _MEDIA_MAX_CHARS:
+        return content[: _MEDIA_MAX_CHARS].rstrip() + " …"
+    return content
 
 
 async def build_messages(
@@ -164,12 +180,10 @@ async def build_messages(
                     messages.append({"role": "user", "content": label})
             continue
         if len(content) > _MAX_HISTORY_CHARS and message.content_type in (None, ContentType.TEXT):
-            # Cap only plain chat history. Media messages carry the vision/STT
-            # extraction as their whole point: truncating them (the first 400
-            # chars can be a model's reasoning block, not the content) makes the
-            # agent believe the attachment was never read. Media content is
-            # already bounded upstream by the ingestion excerpt budget.
+            # Cap only plain chat history.
             content = content[: _MAX_HISTORY_CHARS].rstrip() + " …"
+        elif message.content_type is not None and message.content_type != ContentType.TEXT:
+            content = _trim_media_content(content)
         messages.append({"role": role, "content": content})
 
     return messages

@@ -1,4 +1,4 @@
-"""Agent context manager tests: profile/watchlist/memories/history assembly."""
+﻿"""Agent context manager tests: profile/watchlist/memories/history assembly."""
 
 import pytest
 
@@ -103,17 +103,16 @@ async def test_context_includes_watchlist_and_memories(uow, session_factory, dem
 
 
 @pytest.mark.asyncio
-async def test_context_keeps_full_media_content(uow, demo_user):
-    """Regression: the 400-char history cap must not truncate media messages —
-    the vision/STT extraction is the message's whole point, and its first chars
-    may be a model's reasoning block rather than the content."""
+async def test_context_caps_and_strips_thinking_from_media(uow, demo_user):
+    """Regression: media excerpts are bounded (free-tier Groq TPM windows) and
+    legacy  thinking reasoning chatter is stripped before the context."""
     user_id = demo_user["user_id"]
     async with uow:
         conversation = await uow.conversations.create(user_id)
         long = "[image contents]\n<think>reasoning that must not survive</think>\n" + (
-            "chart detail: sales by year and country " * 40
+            "chart detail: sales by year and country " * 80
         )
-        assert len(long) > 400
+        assert len(long) > 600
         await uow.conversations.add_message(
             conversation.id, role="user", content=long, content_type="image"
         )
@@ -123,7 +122,10 @@ async def test_context_keeps_full_media_content(uow, demo_user):
     async with uow:
         messages = await build_messages(uow, user_id=user_id, conversation_id=conversation_id)
     user_msgs = [m["content"] for m in messages if m["role"] == "user"]
-    assert user_msgs and user_msgs[0] == long
+    assert user_msgs
+    assert "thinking" not in user_msgs[0]
+    assert user_msgs[0].startswith("[image contents]")
+    assert len(user_msgs[0]) <= 600 + 3
 
 
 @pytest.mark.asyncio
