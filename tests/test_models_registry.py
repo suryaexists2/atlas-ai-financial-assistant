@@ -255,7 +255,7 @@ def test_config_defaults_resilient_chain():
     assert "google/gemini-2.0-flash" not in chain
     assert "google/gemini-2.5-flash" not in chain
     assert "meta-llama/llama-3.1-8b-instruct" not in chain
-    assert settings.llm_max_tokens == 600
+    assert settings.llm_max_tokens == 320
     assert settings.llm_dynamic_free_models is True
     assert settings.llm_model_skip_seconds == 600
     assert settings.llm_free_min_context == 32_000

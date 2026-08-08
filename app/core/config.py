@@ -54,7 +54,7 @@ class Settings(BaseSettings):
             "nvidia/nemotron-nano-9b-v2:free",
         ]
     )
-    llm_max_tokens: int = 600
+    llm_max_tokens: int = 320
     llm_temperature: float = 0.3
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 2
