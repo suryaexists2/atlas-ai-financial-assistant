@@ -18,7 +18,7 @@ import httpx
 
 from app.application.agent.ports import LLMGateway, LLMResponse, LLMToolCall
 from app.core.logging import get_logger
-from app.infrastructure.llm.keys import GroqKeyPool
+from app.infrastructure.llm.keys import GroqKeyPool, is_groq_daily_cap_429
 from app.infrastructure.llm.models_registry import FreeModelRegistry
 
 logger = get_logger(__name__)
@@ -233,9 +233,12 @@ class OpenRouterGateway(LLMGateway):
             and key is not None
             and self._key_pool is not None
             and len(self._key_pool.keys) > 1
+            and is_groq_daily_cap_429(response.status_code, response.text)
         ):
             # Daily caps are per account: only fail over when a spare key
-            # exists — a single key still retries like any transient error.
+            # exists AND the body names the daily bucket. Per-minute TPM/RPM
+            # windows also return 429 but roll over in ~60s — parking the key
+            # for those strands every key on a burst.
             self._key_pool.mark_exhausted(key)
         if response.status_code == 429 or response.status_code >= 500:
             raise LLMGatewayTransientError(

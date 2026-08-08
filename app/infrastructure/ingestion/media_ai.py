@@ -13,6 +13,7 @@ asking the model to both describe the image and transcribe any readable text
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import re
 
@@ -21,9 +22,13 @@ import httpx
 from app.application.ingestion.pipeline import VisionAnalyzer
 from app.application.ingestion.types import FileData
 from app.core.logging import get_logger
-from app.infrastructure.llm.keys import GroqKeyPool
+from app.infrastructure.llm.keys import GroqKeyPool, is_groq_daily_cap_429
 
 logger = get_logger(__name__)
+
+# Retry pause when Groq replies 429 for a per-minute TPM/RPM window (not the
+# daily bucket): the window rolls over in ~60s, so wait it out on the same key.
+_WINDOW_RETRY_SLEEP = 45.0
 
 # Qwen (and other reasoning models) wrap their reasoning in <think>...</think>.
 # The reasoning is not the deliverable: strip it so the extracted content is the
@@ -104,8 +109,19 @@ class GroqSTT:
                 )
             except httpx.HTTPError as exc:
                 raise RuntimeError(f"Groq STT request failed: {exc}") from exc
-            if response.status_code == 429 and self._key_pool is not None and attempt == 0:
+            if (
+                response.status_code == 429
+                and self._key_pool is not None
+                and attempt == 0
+                and is_groq_daily_cap_429(response.status_code, response.text)
+            ):
                 self._key_pool.mark_exhausted(key)
+                continue
+            if response.status_code == 429 and attempt == 0:
+                # Per-minute TPM/RPM window (not the daily bucket): wait for
+                # the window to roll over and retry on the SAME key instead of
+                # burning the pool.
+                await asyncio.sleep(_WINDOW_RETRY_SLEEP)
                 continue
             if response.status_code >= 400:
                 raise RuntimeError(
@@ -292,8 +308,15 @@ class GroqVision:
                 response.status_code == 429
                 and self._key_pool is not None
                 and attempt == 0
+                and is_groq_daily_cap_429(response.status_code, response.text)
             ):
                 self._key_pool.mark_exhausted(key)
+                continue
+            if response.status_code == 429 and attempt == 0:
+                # Per-minute TPM/RPM window (not the daily bucket): wait for
+                # the window to roll over and retry on the SAME key instead of
+                # burning the pool.
+                await asyncio.sleep(_WINDOW_RETRY_SLEEP)
                 continue
             if response.status_code >= 400:
                 raise RuntimeError(

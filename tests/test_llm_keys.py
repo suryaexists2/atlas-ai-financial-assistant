@@ -57,3 +57,20 @@ def test_pool_marks_missing_key_silently():
     pool.mark_exhausted("nope")
     assert pool.current() == "k1"
     assert time.monotonic() > 0  # keep the import useful
+
+
+def test_is_groq_daily_cap_429_parks_only_daily_bucket():
+    from app.infrastructure.llm.keys import is_groq_daily_cap_429
+
+    assert is_groq_daily_cap_429(429, "tokens per day (TPD) limit 200000/200000") is True
+    assert is_groq_daily_cap_429(429, "requests per day (RPD) limit reached") is True
+    assert (
+        is_groq_daily_cap_429(
+            429, "tokens per minute (TPM): Limit 8000, Requested 13119"
+        )
+        is False
+    )
+    assert is_groq_daily_cap_429(429, "rate limited") is False
+    assert is_groq_daily_cap_429(429, "") is False
+    assert is_groq_daily_cap_429(200, "tokens per day") is False
+    assert is_groq_daily_cap_429(None, "") is False

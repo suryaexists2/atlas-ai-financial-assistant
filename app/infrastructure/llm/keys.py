@@ -32,6 +32,23 @@ def _next_midnight() -> float:
     return tomorrow.timestamp()
 
 
+def is_groq_daily_cap_429(status_code: int | None, body: str) -> bool:
+    """True when a Groq HTTP 429 means the *daily* bucket (TPD/RPD) is done.
+
+    Groq also returns 429 for per-minute TPM/RPM windows, which roll over in
+    ~60s; parking the key for those would strand every key on a burst. Only
+    bodies naming the daily bucket park the key; everything else is treated as
+    a transient window that retries on the same key.
+    """
+    if status_code != 429:
+        return False
+    low = (body or "").lower()
+    return any(
+        marker in low
+        for marker in ("tokens per day", "requests per day", "(tpd)", "(rpd)")
+    )
+
+
 class GroqKeyPool:
     """Sequential failover over Groq API keys.
 

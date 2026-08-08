@@ -545,9 +545,11 @@ async def test_groq_gateway_raises_when_all_keys_exhausted(monkeypatch):
     monkeypatch.setattr(keys_module, "_now_utc", lambda: now[0])
     monkeypatch.setattr(keys_module, "_next_midnight", lambda: now[0] + 1)
     pool = GroqKeyPool(["key-a", "key-b"])
+    pool.mark_exhausted("key-a")
+    pool.mark_exhausted("key-b")
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(429, text="rate limited")
+        return httpx.Response(429, text="tokens per day (TPD) limit exceeded")
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     gateway = GroqGateway(
@@ -560,6 +562,50 @@ async def test_groq_gateway_raises_when_all_keys_exhausted(monkeypatch):
     with pytest.raises(LLMGatewayError) as exc_info:
         await gateway.complete([{"role": "user", "content": "hi"}])
     assert "exhausted" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_groq_gateway_retries_same_key_on_per_minute_429():
+    """A 429 that names the per-minute (TPM) window must NOT park the key —
+    it retries on the same key once the window rolls over."""
+    from app.infrastructure.llm import keys as keys_module
+    from app.infrastructure.llm.keys import GroqKeyPool
+
+    now = [1_000_000.0]
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(keys_module, "_now_utc", lambda: now[0])
+    monkeypatch.setattr(keys_module, "_next_midnight", lambda: now[0] + 1)
+
+    pool = GroqKeyPool(["key-a", "key-b"])
+    seen: list[str] = []
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["authorization"])
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(
+                429, text="Request too large for model `x` ... tokens per minute (TPM): Limit 8000, Requested 8200"
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    gateway = GroqGateway(
+        "ignored",
+        "openai/gpt-oss-120b",
+        max_retries=1,
+        http=http,
+        key_pool=pool,
+        skip_seconds=600,
+    )
+    gateway._tpm_retry_seconds = 0.1
+    response = await gateway.complete([{"role": "user", "content": "hi"}])
+    assert response.content == "ok"
+    assert seen == ["Bearer key-a", "Bearer key-a"]
+    assert pool.current() == "key-a"
 
 
 @pytest.mark.asyncio

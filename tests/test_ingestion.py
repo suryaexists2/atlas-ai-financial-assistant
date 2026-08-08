@@ -605,7 +605,7 @@ async def test_groq_vision_switches_key_on_ratelimit():
         auth = request.headers["authorization"]
         seen.append(auth)
         if auth == "Bearer key-1":
-            return httpx.Response(429, text="rate limited")
+            return httpx.Response(429, text="Rate limit exceeded for model `qwen/qwen3.6-27b`: tokens per day (TPD) limit reached")
         return httpx.Response(
             200,
             json={"choices": [{"message": {"content": "A chart titled Sales."}}]},
