@@ -202,7 +202,7 @@ class GroqVision:
         self,
         api_key: str,
         *,
-        model: str = "meta-llama/llama-4-scout-17b-16e-instruct",
+        model: str = "qwen/qwen3.6-27b",
         timeout_seconds: float = 60.0,
         http: httpx.AsyncClient | None = None,
     ) -> None:

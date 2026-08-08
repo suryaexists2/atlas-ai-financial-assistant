@@ -503,7 +503,7 @@ async def test_groq_vision_sends_openai_compatible_body():
         assert await vision.describe(data) == "A chart titled Growth."
     assert captured["path"] == "/openai/v1/chat/completions"
     assert captured["auth"] == "Bearer groq-test-key"
-    assert captured["model"] == "meta-llama/llama-4-scout-17b-16e-instruct"
+    assert captured["model"] == "qwen/qwen3.6-27b"
     assert captured["has_text"]
     assert captured["data_uri"]
 
