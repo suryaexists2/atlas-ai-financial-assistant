@@ -116,12 +116,30 @@ class IngestionPipeline:
             )
 
         text: str | None = None
-        if kind is DocumentKind.VOICE:
-            text = await self._transcribe(data)
-        elif kind is DocumentKind.IMAGE:
-            text = await self._analyze_image(data)
-        else:
-            text = await self._parse_text(data)
+        try:
+            if kind is DocumentKind.VOICE:
+                text = await self._transcribe(data)
+            elif kind is DocumentKind.IMAGE:
+                text = await self._analyze_image(data)
+            else:
+                text = await self._parse_text(data)
+        except RuntimeError as exc:
+            # Provider-level failures (auth, model gone, empty reply) must not
+            # masquerade as "nothing was extracted": record the real reason so
+            # operators can see exactly which AI stage and provider failed.
+            logger.warning("media_ai_stage_failed", kind=kind.value, error=str(exc))
+            return MediaIngestionResult(
+                error=f"AI processing failed: {exc}",
+                error_code="ai_stage",
+                meta={"file_id": file_id, "kind": kind},
+            )
+        except Exception as exc:  # noqa: BLE001 - AI stage crashes are graceful
+            logger.warning("media_ai_stage_crashed", kind=kind.value, error=str(exc))
+            return MediaIngestionResult(
+                error="AI processing crashed",
+                error_code="internal",
+                meta={"file_id": file_id, "kind": kind},
+            )
 
         if not text:
             return MediaIngestionResult(
@@ -160,20 +178,12 @@ class IngestionPipeline:
     async def _transcribe(self, data: FileData) -> str | None:
         if self.stt is None:
             return None
-        try:
-            return (await self.stt.transcribe(data)).strip()
-        except Exception as exc:  # noqa: BLE001 - STT provider failures are graceful
-            logger.warning("media_stt_failed", error=str(exc))
-            return None
+        return (await self.stt.transcribe(data)).strip()
 
     async def _analyze_image(self, data: FileData) -> str | None:
         if self.vision is None:
             return None
-        try:
-            return (await self.vision.describe(data)).strip()
-        except Exception as exc:  # noqa: BLE001 - provider failures are graceful
-            logger.warning("media_vision_failed", error=str(exc))
-            return None
+        return (await self.vision.describe(data)).strip()
 
     async def _parse_text(self, data: FileData) -> str | None:
         try:

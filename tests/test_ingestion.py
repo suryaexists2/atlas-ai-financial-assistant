@@ -342,6 +342,22 @@ async def test_pipeline_voice_without_stt_graceful():
     assert result.error_code == "empty"
 
 
+async def test_pipeline_vision_provider_failure_reports_real_error():
+    """A failing AI stage must surface its real error instead of the generic
+    "empty" code, so operators can tell the provider apart from an empty file."""
+
+    class BoomVision:
+        async def describe(self, data: FileData) -> str:
+            raise RuntimeError("Groq vision error 404: model not found")
+
+    data = FileData(raw=b"png-bytes", mime_type="image/png")
+    pipeline = make_pipeline(FakeFetcher(data), vision=BoomVision())
+    result = await pipeline.process(file_id="i9", mime_type="image/png", filename=None)
+    assert not result.ok
+    assert result.error_code == "ai_stage"
+    assert "model not found" in result.error
+
+
 async def test_pipeline_large_document_chunked_and_excerpted():
     long_text = "\n".join(f"line {i}: quarterly figures remain strong" for i in range(3000))
     data = FileData(raw=long_text.encode(), mime_type="text/plain")
