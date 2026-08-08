@@ -99,6 +99,10 @@ class ConversationRepository(abc.ABC):
     @abc.abstractmethod
     async def list_messages(self, conversation_id: uuid.UUID, limit: int = 50) -> list[Message]: ...
 
+    @abc.abstractmethod
+    async def delete_for_user(self, user_id: uuid.UUID) -> int:
+        """Hard-deletes every conversation (and, via cascade, its messages)."""
+
 
 class WatchlistRepository(abc.ABC):
     @abc.abstractmethod
@@ -114,6 +118,10 @@ class WatchlistRepository(abc.ABC):
 
     @abc.abstractmethod
     async def deactivate(self, item: WatchlistItem) -> WatchlistItem: ...
+
+    @abc.abstractmethod
+    async def delete_all_for_user(self, user_id: uuid.UUID) -> int:
+        """Hard-deletes every watchlist item for the user."""
 
 
 class AlertRepository(abc.ABC):
@@ -132,6 +140,10 @@ class AlertRepository(abc.ABC):
     @abc.abstractmethod
     async def delete(self, alert: Alert) -> None: ...
 
+    @abc.abstractmethod
+    async def delete_for_user(self, user_id: uuid.UUID) -> int:
+        """Hard-deletes every alert for the user."""
+
 
 class DocumentRepository(abc.ABC):
     @abc.abstractmethod
@@ -145,6 +157,10 @@ class DocumentRepository(abc.ABC):
 
     @abc.abstractmethod
     async def update_status(self, document: Any, status: DocumentStatus, **meta: Any) -> Any: ...
+
+    @abc.abstractmethod
+    async def delete_for_user(self, user_id: uuid.UUID) -> int:
+        """Hard-deletes every stored document for the user."""
 
 
 class MemoryRepository(abc.ABC):
@@ -171,6 +187,10 @@ class MemoryRepository(abc.ABC):
         self, user_id: uuid.UUID, memory_key: str, archived: bool = False
     ) -> int: ...
 
+    @abc.abstractmethod
+    async def delete_all_for_user(self, user_id: uuid.UUID) -> int:
+        """Hard-deletes every memory row (active or archived) for the user."""
+
 
 class JobRepository(abc.ABC):
     @abc.abstractmethod
@@ -192,6 +212,10 @@ class JobRepository(abc.ABC):
 
     @abc.abstractmethod
     async def delete(self, job: ScheduledJob) -> None: ...
+
+    @abc.abstractmethod
+    async def delete_for_user(self, user_id: uuid.UUID) -> int:
+        """Hard-deletes every scheduled job owned by the user."""
 
     @abc.abstractmethod
     async def lock_for_run(self, job_id: uuid.UUID) -> ScheduledJob | None: ...
@@ -261,6 +285,10 @@ class IntegrationRepository(abc.ABC):
     @abc.abstractmethod
     async def delete(self, link: IntegrationLink) -> None: ...
 
+    @abc.abstractmethod
+    async def delete_all_for_user(self, user_id: uuid.UUID) -> int:
+        """Hard-deletes every integration link for the user (e.g. Google)."""
+
 
 class IngestLedgerRepository(abc.ABC):
     """Dedup ledger for raw provider updates (update_id + message_id)."""
@@ -304,6 +332,10 @@ class OAuthFlowRepository(abc.ABC):
 
     @abc.abstractmethod
     async def delete_expired(self, before: dt.datetime) -> int: ...
+
+    @abc.abstractmethod
+    async def delete_all_for_user(self, user_id: uuid.UUID) -> int:
+        """Hard-deletes every OAuth flow for the user."""
 
 
 __all__ = [

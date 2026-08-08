@@ -8,6 +8,8 @@ from typing import Any
 from app.application.agent.core import AgentCore
 from app.application.agent.tools import ToolContext
 from app.application.onboarding import OnboardingEngine, OnboardingReply
+from app.application.reset import reset_turn
+from app.domain.enums import MessageRole
 from app.infrastructure.providers.finnhub import FinnhubClient
 from app.infrastructure.providers.sec import SecEdgarClient
 from app.interfaces.telegram.normalized import NormalizedMessage
@@ -116,6 +118,26 @@ class AgentComposer:
         self._onboarding = onboarding or OnboardingEngine()
 
     async def __call__(self, ctx: ReplyContext) -> str | None:
+        # /reset is deterministic and must run before onboarding (it has to
+        # work in every state, including mid-onboarding). No LLM turn ever.
+        reset = await reset_turn(
+            ctx.uow,
+            user_id=ctx.user_id,
+            text=ctx.message.combined_text,
+        )
+        if reset.wiped:
+            # Old conversations are gone; persist this reply in a fresh one so
+            # the new chat starts clean (and the processor skips its own copy).
+            fresh = await ctx.uow.conversations.create(ctx.user_id)
+            await ctx.uow.conversations.add_message(
+                fresh.id,
+                role=MessageRole.ASSISTANT,
+                content=reset.reply,
+            )
+            ctx.assistant_persisted = True
+        if reset.reply is not None:
+            return reset.reply
+
         onboarding_reply: OnboardingReply = await self._onboarding.turn(
             ctx.uow,
             user_id=ctx.user_id,

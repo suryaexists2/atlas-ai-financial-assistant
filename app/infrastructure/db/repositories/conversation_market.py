@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities import Alert, Conversation, Message, WatchlistItem
@@ -87,6 +87,13 @@ class SqlConversationRepository(ConversationRepository):
         )
         return list(reversed(result.scalars().all()))
 
+    async def delete_for_user(self, user_id: uuid.UUID) -> int:
+        result = await self.session.execute(
+            delete(Conversation).where(Conversation.user_id == user_id)
+        )
+        await self.session.flush()
+        return result.rowcount or 0
+
 
 class SqlWatchlistRepository(WatchlistRepository):
     def __init__(self, session: AsyncSession) -> None:
@@ -123,6 +130,13 @@ class SqlWatchlistRepository(WatchlistRepository):
         await self.session.flush()
         return item
 
+    async def delete_all_for_user(self, user_id: uuid.UUID) -> int:
+        result = await self.session.execute(
+            delete(WatchlistItem).where(WatchlistItem.user_id == user_id)
+        )
+        await self.session.flush()
+        return result.rowcount or 0
+
 
 class SqlAlertRepository(AlertRepository):
     def __init__(self, session: AsyncSession) -> None:
@@ -153,3 +167,8 @@ class SqlAlertRepository(AlertRepository):
     async def delete(self, alert: Alert) -> None:
         await self.session.delete(alert)
         await self.session.flush()
+
+    async def delete_for_user(self, user_id: uuid.UUID) -> int:
+        result = await self.session.execute(delete(Alert).where(Alert.user_id == user_id))
+        await self.session.flush()
+        return result.rowcount or 0

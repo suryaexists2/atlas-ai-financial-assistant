@@ -42,6 +42,10 @@ class ReplyContext:
     note: dict[str, Any] = field(default_factory=dict)
     # Contextual, single-purpose inline button (only used for OAuth connect).
     reply_markup: dict[str, Any] | None = None
+    # When the composer already persisted its own assistant message (e.g. a
+    # /reset confirmation into a fresh conversation), the processor must not
+    # write a second copy into the (possibly deleted) incoming conversation.
+    assistant_persisted: bool = False
 
 
 ReplyComposer = Callable[[ReplyContext], Awaitable[str | None]]
@@ -235,8 +239,9 @@ class UpdateProcessor:
             )
             # Persist real replies into the conversation so the LLM context keeps a
             # proper user->assistant->user rhythm. Fallback replies are transient
-            # errors and are not worth polluting the memory with.
-            if reply_text != self._fallback_reply:
+            # errors and are not worth polluting the memory with. Reset replies
+            # are persisted by the composer into the fresh conversation.
+            if reply_text != self._fallback_reply and not ctx.assistant_persisted:
                 await uow.conversations.add_message(
                     conversation_id,
                     role=MessageRole.ASSISTANT,

@@ -117,6 +117,11 @@ class SqlMemoryRepository(MemoryRepository):
         await self.session.flush()
         return result.rowcount or 0
 
+    async def delete_all_for_user(self, user_id: uuid.UUID) -> int:
+        result = await self.session.execute(delete(Memory).where(Memory.user_id == user_id))
+        await self.session.flush()
+        return result.rowcount or 0
+
 
 class SqlJobRepository(JobRepository):
     def __init__(self, session: AsyncSession) -> None:
@@ -156,6 +161,13 @@ class SqlJobRepository(JobRepository):
     async def delete(self, job: ScheduledJob) -> None:
         await self.session.delete(job)
         await self.session.flush()
+
+    async def delete_for_user(self, user_id: uuid.UUID) -> int:
+        result = await self.session.execute(
+            delete(ScheduledJob).where(ScheduledJob.user_id == user_id)
+        )
+        await self.session.flush()
+        return result.rowcount or 0
 
     async def lock_for_run(self, job_id: uuid.UUID) -> ScheduledJob | None:
         result = await self.session.execute(
@@ -337,6 +349,11 @@ class SqlDocumentRepository(DocumentRepository):
         await self.session.flush()
         return document
 
+    async def delete_for_user(self, user_id: uuid.UUID) -> int:
+        result = await self.session.execute(delete(Document).where(Document.user_id == user_id))
+        await self.session.flush()
+        return result.rowcount or 0
+
 
 class SqlIntegrationRepository(IntegrationRepository):
     def __init__(self, session: AsyncSession) -> None:
@@ -392,6 +409,13 @@ class SqlIntegrationRepository(IntegrationRepository):
         await self.session.delete(link)
         await self.session.flush()
 
+    async def delete_all_for_user(self, user_id: uuid.UUID) -> int:
+        result = await self.session.execute(
+            delete(IntegrationLink).where(IntegrationLink.user_id == user_id)
+        )
+        await self.session.flush()
+        return result.rowcount or 0
+
 
 class SqlOAuthFlowRepository(OAuthFlowRepository):
     def __init__(self, session: AsyncSession) -> None:
@@ -443,6 +467,11 @@ class SqlOAuthFlowRepository(OAuthFlowRepository):
     async def get_by_state(self, state: str) -> OAuthFlow | None:
         result = await self.session.execute(select(OAuthFlow).where(OAuthFlow.state == state))
         return result.scalar_one_or_none()
+
+    async def delete_all_for_user(self, user_id: uuid.UUID) -> int:
+        result = await self.session.execute(delete(OAuthFlow).where(OAuthFlow.user_id == user_id))
+        await self.session.flush()
+        return result.rowcount or 0
 
 
 class SqlIngestLedgerRepository(IngestLedgerRepository):
