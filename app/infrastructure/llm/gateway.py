@@ -79,6 +79,8 @@ class OpenRouterGateway(LLMGateway):
         self._extra_body: dict[str, dict[str, Any]] = {}
         # Multi-key failover pool (Groq). None keeps the single-key behavior.
         self._key_pool = key_pool
+        # Retry pause for tokens-per-minute (TPM) 413s from Groq.
+        self._tpm_retry_seconds = 45.0
 
     async def _sync_registry(self) -> None:
         if self._registry is None:
@@ -167,9 +169,16 @@ class OpenRouterGateway(LLMGateway):
                     return response
                 except LLMGatewayError as exc:
                     last_error = exc
-                    self._model_errors[model] = str(exc)[:200]
+                    self._model_errors[model] = str(exc)[:400]
                     if isinstance(exc, LLMGatewayTransientError) and attempt <= self._max_retries:
-                        await asyncio.sleep(self._backoff(attempt))
+                        # TPM windows roll over in ~60s; the generic backoff is
+                        # seconds, so space those retries out properly.
+                        wait = (
+                            self._tpm_retry_seconds
+                            if exc.status_code == 413
+                            else self._backoff(attempt)
+                        )
+                        await asyncio.sleep(wait)
                         continue
                     if exc.status_code in (401, 403):
                         raise
@@ -190,7 +199,7 @@ class OpenRouterGateway(LLMGateway):
             raise last_error or LLMGatewayError("LLM provider request failed")
         raise LLMGatewayError(
             f"All {len(chain)} LLM model(s) failed; "
-            + "; ".join(f"{m}={err}" for m, err in self._model_errors.items())[:700]
+            + "; ".join(f"{m}={err}" for m, err in self._model_errors.items())[:1500]
         ) from last_error
 
     async def _post(
@@ -232,6 +241,20 @@ class OpenRouterGateway(LLMGateway):
             raise LLMGatewayTransientError(
                 f"LLM provider transient error {response.status_code}: {response.text[:200]}",
                 status_code=response.status_code,
+            )
+        if response.status_code == 413:
+            # Groq returns 413 when the request bursts the model's tokens-per-
+            # minute window (body mentions TPM); the window rolls over shortly,
+            # so it retries like a rate limit. Other 413s (context length) are
+            # hard failures that retrying cannot help.
+            if "tokens per minute" in response.text.lower():
+                raise LLMGatewayTransientError(
+                    f"LLM provider transient error 413 (TPM window): {response.text[:200]}",
+                    status_code=413,
+                )
+            raise LLMGatewayError(
+                f"LLM provider error 413: {response.text[:400]}",
+                status_code=413,
             )
         if response.status_code >= 400:
             raise LLMGatewayError(

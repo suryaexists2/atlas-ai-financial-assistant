@@ -598,6 +598,61 @@ async def test_failover_raises_when_both_fail():
 
 
 @pytest.mark.asyncio
+async def test_413_tpm_from_groq_retried_with_long_pause():
+    requested_models: list[str] = []
+    groq_calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requested_models.append(body["model"])
+        if body["model"] == "model-x":
+            groq_calls["n"] += 1
+            if groq_calls["n"] == 1:
+                return httpx.Response(413, text="Request too large for model `x` in organization `org` service tier `on_demand` on tokens per minute (TPM): Limit 1000, current 1500")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    gateway = GroqGateway(
+        "model-key",
+        "model-x",
+        max_retries=1,
+        http=http,
+        skip_seconds=600,
+    )
+    gateway._tpm_retry_seconds = 0.1
+    first = await gateway.complete([{"role": "user", "content": "hi"}])
+    assert first.content == "ok"
+    assert requested_models == ["model-x", "model-x"]
+
+
+@pytest.mark.asyncio
+async def test_413_without_tpm_is_hard_error():
+    requested_models: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requested_models.append(body["model"])
+        return httpx.Response(413, text="context length exceeded")
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    gateway = OpenRouterGateway(
+        "test-key",
+        "model-x",
+        max_retries=1,
+        fallback_models=["fallback-a"],
+        http=http,
+        skip_seconds=600,
+    )
+    with pytest.raises(LLMGatewayError) as exc_info:
+        await gateway.complete([{"role": "user", "content": "hi"}])
+    assert "413" in str(exc_info.value)
+    assert requested_models == ["model-x", "fallback-a"]
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_429_gets_short_skip_not_full_window():
     requested_models: list[str] = []
 
