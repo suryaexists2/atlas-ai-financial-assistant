@@ -30,3 +30,36 @@ def test_groq_keys_default_fallback_when_nothing_set():
     assert _groq_keys(s) == [
         "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"
     ]
+
+
+def test_build_chat_gateway_chain_groq_gemini_openrouter():
+    """With a Gemini key configured the chain becomes Groq -> Gemini ->
+    OpenRouter, so Gemini absorbs the turn before the OpenRouter free route."""
+    from app.infrastructure.llm.gateway import FailoverGateway, GeminiGateway
+    from app.main import _build_chat_gateway
+
+    s = Settings(
+        _env_file=None,
+        groq_api_keys=["gsk_a"],
+        openrouter_api_key="or_test",
+        gemini_api_key="AIza_gem",
+    )
+    gateway = _build_chat_gateway(s)
+    assert isinstance(gateway, FailoverGateway)
+    backup = gateway._backup
+    assert isinstance(backup, FailoverGateway)
+    assert isinstance(backup._primary, GeminiGateway)
+    assert backup._primary._base_url == (
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    )
+
+
+def test_build_chat_gateway_skips_gemini_without_key():
+    from app.infrastructure.llm.gateway import FailoverGateway
+    from app.main import _build_chat_gateway
+
+    s = Settings(_env_file=None, groq_api_keys=["gsk_a"], openrouter_api_key="or_test")
+    gateway = _build_chat_gateway(s)
+    assert isinstance(gateway, FailoverGateway)
+    backup = gateway._backup
+    assert isinstance(backup, FailoverGateway) is False

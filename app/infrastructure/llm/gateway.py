@@ -25,6 +25,8 @@ logger = get_logger(__name__)
 
 _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+# Gemini's OpenAI-compatible endpoint (v1beta keeps tool calling enabled).
+_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
 # Serialises gateway completions so concurrent turns cannot burst the same
 # per-minute TPM window on the active key (see FailoverGateway docstring).
@@ -366,6 +368,42 @@ class GroqGateway(OpenRouterGateway):
                     "reasoning_effort": "none",
                     "reasoning_format": "parsed",
                 }
+
+
+class GeminiGateway(OpenRouterGateway):
+    """Free chat completions via Gemini's OpenAI-compatible endpoint.
+
+    Same protocol, retries, model skipping and TPM backoff as the OpenRouter
+    gateway, but pointed at `generativelanguage.googleapis.com` with a Google
+    AI Studio key. No registry and no extra body: Gemini accepts the standard
+    `tools`/`tool_calls` shape out of the box. Its per-minute TPM window is
+    orders of magnitude larger than Groq's 8K free tier, so it is the safety
+    net that keeps tight back-to-back turns answering when the Groq buckets
+    are exhausted.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        *,
+        timeout_seconds: float = 60.0,
+        max_retries: int = 2,
+        http: httpx.AsyncClient | None = None,
+        skip_seconds: int = 600,
+        rate_limit_skip_seconds: int = 60,
+    ) -> None:
+        super().__init__(
+            api_key,
+            model,
+            base_url=_GEMINI_URL,
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+            http=http,
+            skip_seconds=skip_seconds,
+            rate_limit_skip_seconds=rate_limit_skip_seconds,
+            registry=None,
+        )
 
 
 class FailoverGateway(LLMGateway):

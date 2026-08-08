@@ -130,6 +130,13 @@ class Settings(BaseSettings):
     # current vision-capable model on GroqCloud (Llama 4 Scout/Maverick and the
     # llama-3.2 vision previews are no longer served).
     groq_vision_model: str = "qwen/qwen3.6-27b"
+    # --- Gemini fallback tier (free via Google AI Studio) ---
+    # Gemini's per-minute TPM window dwarfs Groq's 8K, so a single gemini key
+    # absorbs back-to-back turns whenever the Groq buckets are exhausted. Uses
+    # Gemini's OpenAI-compatible endpoint, so the standard chat-completions
+    # gateway shape already fits with no SDK dependency.
+    gemini_api_key: str | None = Field(default=None, repr=False)
+    gemini_llm_model: str = "gemini-2.0-flash"
     stt_timeout_seconds: float = 90.0
     vision_timeout_seconds: float = 60.0
     media_download_timeout_seconds: float = 60.0

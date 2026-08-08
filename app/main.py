@@ -195,12 +195,15 @@ def _llm_registry(settings: Settings):
 def _build_chat_gateway(settings: Settings):
     """Builds the chat gateway for the chosen provider stack.
 
-    `llm_provider == "groq"` (with a key) makes Groq the primary engine and
-    OpenRouter the backup so the bot never stops; otherwise OpenRouter with its
-    free-model chain is used directly. Returns None when no LLM key exists.
+    `llm_provider == "groq"` (with a key) makes Groq the primary engine, Gemini
+    the mid-tier fallback (huge free TPM window, when a key is configured) and
+    OpenRouter the last resort so the bot never stops; otherwise OpenRouter
+    with its free-model chain is used directly. Returns None when no LLM key
+    exists.
     """
     from app.infrastructure.llm.gateway import (
         FailoverGateway,
+        GeminiGateway,
         GroqGateway,
         OpenRouterGateway,
     )
@@ -238,22 +241,44 @@ def _build_chat_gateway(settings: Settings):
             registry=_llm_registry(settings),
         )
 
+    gemini_gateway = None
+    if settings.gemini_api_key:
+        gemini_gateway = GeminiGateway(
+            settings.gemini_api_key,
+            settings.gemini_llm_model,
+            timeout_seconds=settings.llm_timeout_seconds,
+            max_retries=settings.llm_max_retries,
+            skip_seconds=settings.llm_model_skip_seconds,
+            rate_limit_skip_seconds=settings.llm_rate_limit_skip_seconds,
+        )
+
     if settings.llm_provider == "groq":
         if groq_gateway is not None and openrouter_gateway is not None:
             logger.info(
                 "llm_gateway_built",
                 provider="groq",
                 primary=settings.groq_llm_model,
+                gemini_backup=(
+                    settings.gemini_llm_model if gemini_gateway is not None else None
+                ),
                 openrouter_backup=settings.llm_model,
             )
-            return FailoverGateway(groq_gateway, openrouter_gateway)
+            backup = (
+                FailoverGateway(gemini_gateway, openrouter_gateway)
+                if gemini_gateway is not None
+                else openrouter_gateway
+            )
+            return FailoverGateway(groq_gateway, backup)
         logger.warning(
             "llm_gateway_built_partial",
             provider="groq",
             groq_available=groq_gateway is not None,
+            gemini_available=gemini_gateway is not None,
             openrouter_available=openrouter_gateway is not None,
         )
-        return groq_gateway or openrouter_gateway
+        if groq_gateway is not None and gemini_gateway is not None:
+            return FailoverGateway(groq_gateway, gemini_gateway)
+        return groq_gateway or gemini_gateway or openrouter_gateway
     logger.info("llm_gateway_built", provider="openrouter", primary=settings.llm_model)
     return openrouter_gateway
 

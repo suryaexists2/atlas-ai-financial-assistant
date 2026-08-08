@@ -269,3 +269,5 @@ def test_config_defaults_groq_stack():
     assert settings.stt_provider == "groq"
     assert settings.groq_stt_model == "whisper-large-v3-turbo"
     assert settings.vision_model == "google/gemma-4-26b-a4b-it:free"
+    assert settings.gemini_api_key is None
+    assert settings.gemini_llm_model == "gemini-2.0-flash"

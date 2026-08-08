@@ -9,6 +9,7 @@ import pytest
 from app.application.agent.ports import LLMResponse
 from app.infrastructure.llm.gateway import (
     FailoverGateway,
+    GeminiGateway,
     GroqGateway,
     LLMGatewayError,
     LLMGatewayTransientError,
@@ -535,6 +536,66 @@ async def test_groq_gateway_switches_key_on_ratelimit():
     assert seen == ["Bearer key-a", "Bearer key-b"]
     assert pool.current() == "key-b"
     assert pool.current() == "key-b"
+
+
+@pytest.mark.asyncio
+async def test_gemini_gateway_hits_gemini_openai_endpoint_with_tools():
+    """Gemini is addressed through its OpenAI-compatible endpoint with the
+    standard tools shape and the AI Studio key in the auth header."""
+    requested = {"url": None, "model": None, "auth": None, "tools": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested["url"] = str(request.url)
+        requested["auth"] = request.headers.get("authorization")
+        body = json.loads(request.content)
+        requested["model"] = body["model"]
+        requested["tools"] = body.get("tools")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "gemini reply"}}],
+                "model": body["model"],
+            },
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    gateway = GeminiGateway("gemini-key", "gemini-2.0-flash", http=http)
+    response = await gateway.complete(
+        [{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "get_market_quote"}}],
+    )
+    assert response.content == "gemini reply"
+    assert requested["url"].startswith(
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    )
+    assert requested["model"] == "gemini-2.0-flash"
+    assert requested["auth"] == "Bearer gemini-key"
+    assert requested["tools"][0]["function"]["name"] == "get_market_quote"
+
+
+@pytest.mark.asyncio
+async def test_gemini_gateway_is_the_backup_when_primary_fails():
+    """When the Groq primary raises, the chain transparently answers via the
+    Gemini gateway instead of giving up."""
+    primary = _FakeGateway(error=LLMGatewayError("groq bucket exhausted"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "gemini rescue"}}
+                ],
+                "model": "gemini-2.0-flash",
+            },
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    backup = GeminiGateway("gemini-key", "gemini-2.0-flash", http=http)
+    gateway = FailoverGateway(primary, backup)
+    response = await gateway.complete([{"role": "user", "content": "hi"}])
+    assert response.content == "gemini rescue"
+    assert primary.calls == 1
 
 
 @pytest.mark.asyncio
