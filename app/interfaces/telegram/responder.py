@@ -34,6 +34,24 @@ _REFUSAL_REPLY = (
     "documents, reminders, or meetings. What would you like?"
 )
 
+# "Who/what are you" and purpose questions get one consistent, deterministic
+# answer — Atlas's identity must never depend on which model answers.
+_IDENTITY_RE = re.compile(
+    r"(?i)\b(?:who|what)\s+(?:are|is)\s+(?:you|atlas)\b"
+    r"|\bwhat\s+(?:can|do)\s+you\s+(?:do|help)\b"
+    r"|\bwhat(?:'s|\sis)?\s+your\s+(?:purpose|role)\b"
+    r"|\btell\s+me\s+about\s+yourself\b"
+    r"|\b(?:are|r)\s+you\s+(?:a\s+)?(?:bot|ai|robot|chatgpt)\b"
+)
+
+_IDENTITY_REPLY = (
+    "I'm Atlas, your AI financial assistant. "
+    "I can help you with live quotes, market and news analysis, company "
+    "research, SEC filings, reports and documents, watchlists, alerts, "
+    "reminders, and meetings — plus your connected Gmail, Calendar, Drive, "
+    "and Sheets. What would you like to look into?"
+)
+
 
 class EchoComposer:
     """Dev-only: mirrors back what the user sent."""
@@ -59,6 +77,15 @@ def exfiltration_reply(text: str | None) -> str | None:
     if not text:
         return None
     return _REFUSAL_REPLY if _EXFILTRATION_RE.search(text) else None
+
+
+def identity_reply(text: str | None) -> str | None:
+    """Deterministic identity guard: "who/what are you" questions get the
+    canonical Atlas intro without an LLM turn, so the answer never varies
+    with the underlying model. Returns None for everything else."""
+    if not text:
+        return None
+    return _IDENTITY_REPLY if _IDENTITY_RE.search(text) else None
 
 
 class AgentComposer:
@@ -106,6 +133,12 @@ class AgentComposer:
         refusal = exfiltration_reply(ctx.message.combined_text)
         if refusal:
             return refusal
+        # Identity questions get one consistent, model-independent answer.
+        identity = identity_reply(ctx.message.combined_text)
+        if identity:
+            if onboarding_reply.notice:
+                return f"{onboarding_reply.notice}\n\n{identity}"
+            return identity
         # Onboarding already done (or a question exited it): run the agent.
         tool_ctx = ToolContext(
             uow=ctx.uow,

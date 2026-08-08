@@ -11,10 +11,13 @@ from app.application.onboarding import (
 from app.domain.enums import OnboardingStatus
 
 
-async def make_user(uow):
+async def make_user(uow, first_name=None):
     user = await uow.users.create(telegram_id=555777, username="ada", timezone="UTC")
     await uow.profiles.upsert(user.id)
     await uow.commit()
+    if first_name:
+        await uow.users.update(user, first_name=first_name)
+        await uow.commit()
     return user.id
 
 
@@ -145,14 +148,26 @@ async def test_completed_profile_stays_completed(uow):
 
 async def test_welcome_greets_with_name_and_testing_notice(uow):
     async with uow:
+        user_id = await make_user(uow, first_name="Surya")
+        engine = OnboardingEngine()
+        turn = await engine.turn(uow, user_id=user_id, text="Hi")
+        assert turn.still_onboarding
+        assert "Hi Surya!" in turn.text
+        assert "I'm Atlas, your AI financial assistant" in turn.text
+        assert "testing mode" in turn.text
+        assert "free APIs" in turn.text
+        assert "rate limit" in turn.text
+
+
+async def test_welcome_without_name_uses_plain_greeting(uow):
+    async with uow:
         user_id = await make_user(uow)
         engine = OnboardingEngine()
         turn = await engine.turn(uow, user_id=user_id, text="Hi")
         assert turn.still_onboarding
-        assert "I'm Atlas" in turn.text
-        assert "testing mode" in turn.text
-        assert "free APIs" in turn.text
-        assert "rate limit" in turn.text
+        assert "Hi!" in turn.text
+        assert "I'm Atlas, your AI financial assistant" in turn.text
+        assert "Surya" not in turn.text
 
 
 async def test_testing_notice_can_be_disabled(uow):

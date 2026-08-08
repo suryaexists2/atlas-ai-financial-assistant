@@ -103,8 +103,14 @@ class OnboardingReply:
     notice: str | None = None  # one-time testing-mode heads-up, if enabled
 
 
-_WELCOME_INTRO = (
-    "Hi! I'm Atlas — your financial assistant.\n"
+_WELCOME_GREETING = (
+    "Hi {name}! 👋 I'm Atlas, your AI financial assistant. "
+    "What would you like to look into today?"
+)
+_WELCOME_GREETING_NONAME = (
+    "Hi! 👋 I'm Atlas, your AI financial assistant. What would you like to look into today?"
+)
+_WELCOME_CAPABILITIES = (
     "I can pull live quotes, filings and news, read your documents and voice "
     "notes, and keep an eye on the companies you care about."
 )
@@ -163,8 +169,11 @@ class OnboardingEngine:
     def _notice(self) -> str | None:
         return _TEST_MODE_NOTICE if self._testing_notice else None
 
-    def _welcome_text(self) -> str:
-        text = _WELCOME_INTRO
+    def _welcome_text(self, name: str | None = None) -> str:
+        if name:
+            text = _WELCOME_GREETING.format(name=name) + "\n\n" + _WELCOME_CAPABILITIES
+        else:
+            text = _WELCOME_GREETING_NONAME + "\n\n" + _WELCOME_CAPABILITIES
         notice = self._notice()
         if notice:
             text += "\n\n" + notice
@@ -228,7 +237,11 @@ class OnboardingEngine:
                 await self._set_step(uow, user_id, "interests")
                 return OnboardingReply(text=_INTERESTS_THEN, still_onboarding=True)
             await self._set_step(uow, user_id, "role")
-            return OnboardingReply(text=self._welcome_text(), still_onboarding=True)
+            name = None
+            user = await uow.users.get_by_id(user_id)
+            if user is not None and user.first_name:
+                name = user.first_name
+            return OnboardingReply(text=self._welcome_text(name), still_onboarding=True)
 
         if step == "role":
             role = _parse_role(text)
