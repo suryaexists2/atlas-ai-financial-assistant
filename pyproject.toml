@@ -55,3 +55,5 @@ ignore = ["B008", "UP035"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/test_ingestion.py" = ["E501"]  # hand-built PDF/xlsx fixtures keep raw bytes inline
+"app/application/agent/context.py" = ["E501"]  # system-prompt test invariants must stay contiguous
+"app/application/agent/tools.py" = ["E501"]  # data-driven tool schema specs stay one line per tool

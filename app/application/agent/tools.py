@@ -828,321 +828,212 @@ async def _read_drive_doc(ctx: ToolContext, args: dict[str, Any]) -> str:
         return _google_failure(exc)
 
 
+_TOOL_PARAM_TYPES = {
+    "string": {"type": "string"},
+    "integer": {"type": "integer"},
+    "number": {"type": "number"},
+    "boolean": {"type": "boolean"},
+    "object": {"type": "object"},
+    "strlist": {"type": "array", "items": {"type": "string"}},
+}
+
+# (name, description, {param: type}, required). Kept data-driven so the schemas
+# stay small for the free-tier Groq TPM window while every tool stays available.
+_TOOL_SPECS: list[tuple[str, str, dict[str, str], tuple[str, ...]]] = [
+    (
+        'get_market_quote',
+        'Quote (price, change, high/low) for a US ticker.',
+        {'symbol': 'string'},
+        ('symbol',),
+    ),
+    (
+        'get_company_profile',
+        'Company profile (name, exchange, industry, market cap).',
+        {'symbol': 'string'},
+        ('symbol',),
+    ),
+    (
+        'get_company_filings',
+        'Recent SEC filings (10-K, 10-Q, 8-K default).',
+        {'symbol': 'string', 'form_types': 'strlist', 'limit': 'integer'},
+        ('symbol',),
+    ),
+    (
+        'list_watchlist',
+        "List the user's watchlist.",
+        {},
+        (),
+    ),
+    (
+        'add_to_watchlist',
+        'Add a symbol to the watchlist.',
+        {'symbol': 'string', 'name': 'string', 'sector': 'string'},
+        ('symbol',),
+    ),
+    (
+        'remove_from_watchlist',
+        'Remove a symbol from the watchlist.',
+        {'symbol': 'string'},
+        ('symbol',),
+    ),
+    (
+        'save_memory',
+        "Remember a fact. key 'user_profile' for traits; 'interest:<topic>' for interests.",
+        {'memory_key': 'string', 'summary': 'string', 'value': 'object', 'confidence': 'number'},
+        ('memory_key', 'summary'),
+    ),
+    (
+        'list_memories',
+        'List stored memories.',
+        {'limit': 'integer'},
+        (),
+    ),
+    (
+        'get_market_news',
+        'Latest general market news headlines.',
+        {'limit': 'integer'},
+        (),
+    ),
+    (
+        'get_market_indices',
+        'Major US indices (S&P 500, Dow, Nasdaq) levels and change.',
+        {},
+        (),
+    ),
+    (
+        'get_company_news',
+        'Recent news for a ticker.',
+        {'symbol': 'string', 'limit': 'integer'},
+        ('symbol',),
+    ),
+    (
+        'get_company_earnings',
+        'Latest earnings event for a ticker.',
+        {'symbol': 'string'},
+        ('symbol',),
+    ),
+    (
+        'create_price_alert',
+        'Alert when a stock moves over X percent in a day (operator abs|gte|lte).',
+        {'symbol': 'string', 'percent': 'number', 'operator': 'string', 'direction': 'string'},
+        ('symbol',),
+    ),
+    (
+        'create_news_alert',
+        'Alert on news for a ticker.',
+        {'symbol': 'string', 'keyword': 'string'},
+        ('symbol',),
+    ),
+    (
+        'create_filing_alert',
+        'Alert when a ticker files 8-K/10-K/10-Q.',
+        {'symbol': 'string'},
+        ('symbol',),
+    ),
+    (
+        'list_alerts',
+        'List active alerts.',
+        {},
+        (),
+    ),
+    (
+        'delete_alert',
+        'Remove an alert by alert_id (from list_alerts).',
+        {'alert_id': 'string'},
+        ('alert_id',),
+    ),
+    (
+        'create_daily_briefing',
+        "Schedule the morning briefing. time like '08:00'; scope watchlist|interests|both.",
+        {'time': 'string', 'scope': 'string'},
+        (),
+    ),
+    (
+        'create_reminder',
+        "Schedule a reminder; time like '09:00', text, once=true.",
+        {'text': 'string', 'time': 'string', 'once': 'boolean'},
+        ('text',),
+    ),
+    (
+        'get_document_contents',
+        'Re-read an uploaded document (index 0 = most recent).',
+        {'index': 'integer'},
+        (),
+    ),
+    (
+        'link_google_sheet',
+        'Remember a Sheets URL to query later.',
+        {'url': 'string'},
+        ('url',),
+    ),
+    (
+        'unlink_google_sheet',
+        'Forget the linked sheet.',
+        {},
+        (),
+    ),
+    (
+        'read_google_sheet',
+        'Read rows from a Google Sheet (linked one if no URL).',
+        {'url': 'string'},
+        (),
+    ),
+    (
+        'connect_google',
+        'Start Google sign-in (Gmail, Calendar, Drive); a button appears.',
+        {},
+        (),
+    ),
+    (
+        'disconnect_google',
+        'Disconnect Google (Gmail, Calendar, Drive).',
+        {},
+        (),
+    ),
+    (
+        'search_emails',
+        "Search Gmail (e.g. 'subject:tesla' or 'tesla earnings'); returns matching messages.",
+        {'query': 'string', 'max_results': 'integer'},
+        ('query',),
+    ),
+    (
+        'find_calendar_events',
+        'Upcoming Google Calendar events (default 7 days).',
+        {'days': 'integer'},
+        (),
+    ),
+    (
+        'schedule_meeting',
+        "Create a Calendar event: title, natural time ('tomorrow 10:30' or ISO), attendees.",
+        {'summary': 'string', 'when': 'string', 'duration_min': 'integer', 'description': 'string', 'attendees': 'strlist'},
+        ('summary', 'when'),
+    ),
+    (
+        'read_drive_doc',
+        'Search Drive for a file and read it.',
+        {'query': 'string'},
+        ('query',),
+    ),
+]
+
+_UNUSUAL_HANDLERS = {"get_market_quote": _get_quote, "get_company_filings": _get_filings}
+
+
+def _handler_for(name: str) -> ToolHandler:
+    handler = _UNUSUAL_HANDLERS.get(name) or globals().get(f"_{name}")
+    assert handler is not None, f"missing handler for {name}"
+    return handler
+
+
 DEFAULT_TOOLS: list[Tool] = [
     Tool(
-        name="get_market_quote",
-        description=(
-            "Get the current market quote (price, change, high/low) for a US"
-            " stock symbol, e.g. AAPL."
-        ),
-        parameters={"symbol": {"type": "string", "description": "US stock ticker symbol"}},
-        required=["symbol"],
-        handler=_get_quote,
-    ),
-    Tool(
-        name="get_company_profile",
-        description=(
-            "Get a company profile (name, exchange, industry, market cap) for a US stock symbol."
-        ),
-        parameters={"symbol": {"type": "string", "description": "US stock ticker symbol"}},
-        required=["symbol"],
-        handler=_get_company_profile,
-    ),
-    Tool(
-        name="get_company_filings",
-        description=("Get recent SEC filings (10-K, 10-Q, 8-K by default) for a US stock symbol."),
-        parameters={
-            "symbol": {"type": "string", "description": "US stock ticker symbol"},
-            "form_types": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Optional filing forms to include",
-            },
-            "limit": {"type": "integer", "description": "Max filings to return (default 5)"},
-        },
-        required=["symbol"],
-        handler=_get_filings,
-    ),
-    Tool(
-        name="list_watchlist",
-        description="List the user's watchlist symbols.",
-        parameters={},
-        handler=_list_watchlist,
-    ),
-    Tool(
-        name="add_to_watchlist",
-        description="Add a stock symbol to the user's watchlist.",
-        parameters={
-            "symbol": {"type": "string", "description": "US stock ticker symbol"},
-            "name": {"type": "string", "description": "Optional company name"},
-            "sector": {"type": "string", "description": "Optional sector"},
-        },
-        required=["symbol"],
-        handler=_add_to_watchlist,
-    ),
-    Tool(
-        name="remove_from_watchlist",
-        description="Remove a stock symbol from the user's watchlist.",
-        parameters={"symbol": {"type": "string", "description": "US stock ticker symbol"}},
-        required=["symbol"],
-        handler=_remove_from_watchlist,
-    ),
-    Tool(
-        name="save_memory",
-        description=(
-            "Remember a fact about the user (preferences, goals, risk tolerance). "
-            "Use the key 'user_profile' for durable traits, 'interest:<topic>' for interests."
-        ),
-        parameters={
-            "memory_key": {"type": "string", "description": "Stable identifier for the memory"},
-            "summary": {"type": "string", "description": "Human-readable summary"},
-            "value": {"type": "object", "description": "Optional structured value"},
-            "confidence": {
-                "type": "number",
-                "description": "Confidence 0..1, default 0.6",
-            },
-        },
-        required=["memory_key", "summary"],
-        handler=_save_memory,
-    ),
-    Tool(
-        name="list_memories",
-        description="List memories stored about the user (preferences, interests, goals).",
-        parameters={"limit": {"type": "integer", "description": "Max memories (default 20)"}},
-        handler=_list_memories,
-    ),
-    Tool(
-        name="get_market_news",
-        description="Get the latest general market news headlines with sources.",
-        parameters={"limit": {"type": "integer", "description": "Max headlines (default 8)"}},
-        handler=_get_market_news,
-    ),
-    Tool(
-        name="get_market_indices",
-        description=(
-            "Get current levels of the major US indices (S&P 500, Dow Jones, "
-            "Nasdaq) with change and change percent."
-        ),
-        parameters={},
-        handler=_get_market_indices,
-    ),
-    Tool(
-        name="get_company_news",
-        description="Get recent news headlines for a company symbol (e.g. AAPL).",
-        parameters={
-            "symbol": {"type": "string", "description": "US stock ticker symbol"},
-            "limit": {"type": "integer", "description": "Max headlines (default 8)"},
-        },
-        required=["symbol"],
-        handler=_get_company_news,
-    ),
-    Tool(
-        name="get_company_earnings",
-        description=(
-            "Get the latest earnings event (date, estimates, actuals) for a company symbol."
-        ),
-        parameters={"symbol": {"type": "string", "description": "US stock ticker symbol"}},
-        required=["symbol"],
-        handler=_get_company_earnings,
-    ),
-    Tool(
-        name="create_price_alert",
-        description=(
-            "Create an alert that notifies the user when a stock moves more than a "
-            "percent in a day. operator: abs (any direction), gte, lte."
-        ),
-        parameters={
-            "symbol": {"type": "string", "description": "US stock ticker symbol"},
-            "percent": {"type": "number", "description": "Percent threshold, default 5"},
-            "operator": {
-                "type": "string",
-                "description": "abs|gte|lte, default abs",
-            },
-            "direction": {
-                "type": "string",
-                "description": "Optional: up|down for directional triggers",
-            },
-        },
-        required=["symbol"],
-        handler=_create_price_alert,
-    ),
-    Tool(
-        name="create_news_alert",
-        description="Create an alert that notifies on Reuters-hit news for a company symbol.",
-        parameters={
-            "symbol": {"type": "string", "description": "US stock ticker symbol"},
-            "keyword": {"type": "string", "description": "Optional keyword to match"},
-        },
-        required=["symbol"],
-        handler=_create_news_alert,
-    ),
-    Tool(
-        name="create_filing_alert",
-        description=(
-            "Create an alert that notifies when a company files an SEC form (8-K, 10-K, 10-Q)."
-        ),
-        parameters={"symbol": {"type": "string", "description": "US stock ticker symbol"}},
-        required=["symbol"],
-        handler=_create_filing_alert,
-    ),
-    Tool(
-        name="list_alerts",
-        description="List the user's active alerts.",
-        parameters={},
-        handler=_list_alerts,
-    ),
-    Tool(
-        name="delete_alert",
-        description="Delete/disable an alert by its alert_id (see list_alerts).",
-        parameters={"alert_id": {"type": "string", "description": "Alert id to remove"}},
-        required=["alert_id"],
-        handler=_delete_alert,
-    ),
-    Tool(
-        name="create_daily_briefing",
-        description=(
-            "Schedule (or reschedule) the user's daily morning briefing. "
-            "Pass a 24h local time like '08:00'. scope: watchlist (default), "
-            "interests (topics like AI/semiconductors/tech), or both."
-        ),
-        parameters={
-            "time": {"type": "string", "description": "HH:MM local time, default 08:00"},
-            "scope": {
-                "type": "string",
-                "description": "watchlist|interests|both, default watchlist",
-            },
-        },
-        handler=_create_daily_briefing,
-    ),
-    Tool(
-        name="create_reminder",
-        description=(
-            "Schedule a reminder. Use when the user says 'remind me'. "
-            "Pass 'time' like '09:00' or 'when', the text, and once=true for a single reminder."
-        ),
-        parameters={
-            "text": {"type": "string", "description": "Reminder text"},
-            "time": {"type": "string", "description": "HH:MM local time to remind"},
-            "once": {"type": "boolean", "description": "True if this should fire only once"},
-        },
-        required=["text"],
-        handler=_create_reminder,
-    ),
-    Tool(
-        name="get_document_contents",
-        description=(
-            "Re-read the text of a previously uploaded document for follow-up questions "
-            "(index 0 = most recent)."
-        ),
-        parameters={"index": {"type": "integer", "description": "0 = most recent document"}},
-        handler=_get_document_contents,
-    ),
-    Tool(
-        name="link_google_sheet",
-        description=(
-            "Remember a Google Sheets URL for the user so they can be queried later "
-            "without resending the link."
-        ),
-        parameters={"url": {"type": "string", "description": "Google Sheets share URL"}},
-        required=["url"],
-        handler=_link_google_sheet,
-    ),
-    Tool(
-        name="unlink_google_sheet",
-        description="Forget the user's linked Google Sheet.",
-        parameters={},
-        handler=_unlink_google_sheet,
-    ),
-    Tool(
-        name="read_google_sheet",
-        description=(
-            "Read rows from a Google Sheet. Uses the linked sheet if no URL is given. "
-            "Useful to pull a model portfolio, pipeline resigning data, or spreadsheets "
-            "the user keeps in Drive."
-        ),
-        parameters={"url": {"type": "string", "description": "Optional Google Sheets URL"}},
-        handler=_read_google_sheet,
-    ),
-    Tool(
-        name="connect_google",
-        description=(
-            "Start connecting the user's Google account (Gmail, Calendar, Drive). "
-            "Use when the user wants to search emails, manage meetings, or read "
-            "Drive files, and nothing is connected yet. A button appears for sign-in."
-        ),
-        parameters={},
-        handler=_connect_google,
-    ),
-    Tool(
-        name="disconnect_google",
-        description=(
-            "Disconnect the user's Google account: revokes access and removes "
-            "stored credentials for Gmail, Calendar, and Drive."
-        ),
-        parameters={},
-        handler=_disconnect_google,
-    ),
-    Tool(
-        name="search_emails",
-        description=(
-            "Search the user's Gmail and return matching messages (from, subject, "
-            "date, body excerpt). Use a Gmail-style query like 'subject:tesla' or "
-            "plain terms like 'tesla earnings'."
-        ),
-        parameters={
-            "query": {"type": "string", "description": "Gmail search query"},
-            "max_results": {"type": "integer", "description": "Max messages (default 15)"},
-        },
-        required=["query"],
-        handler=_search_emails,
-    ),
-    Tool(
-        name="find_calendar_events",
-        description=(
-            "List the user's upcoming Google Calendar events (default: next 7 days) "
-            "for meeting preparation."
-        ),
-        parameters={"days": {"type": "integer", "description": "Lookahead days (default 7)"}},
-        handler=_find_calendar_events,
-    ),
-    Tool(
-        name="schedule_meeting",
-        description=(
-            "Create a Google Calendar event for the user. Pass a title, a natural "
-            "time like 'tomorrow 10:30' or an ISO timestamp, and optional attendees."
-        ),
-        parameters={
-            "summary": {"type": "string", "description": "Meeting title"},
-            "when": {"type": "string", "description": "e.g. 'tomorrow 10:30' or ISO"},
-            "duration_min": {"type": "integer", "description": "Duration in minutes (default 60)"},
-            "description": {"type": "string", "description": "Optional agenda/notes"},
-            "attendees": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Optional emails",
-            },
-        },
-        required=["summary", "when"],
-        handler=_schedule_meeting,
-    ),
-    Tool(
-        name="read_drive_doc",
-        description=(
-            "Search the user's Google Drive for a file (PDF, spreadsheet, text, "
-            "Google Doc/Sheet) and read/summarize its contents."
-        ),
-        parameters={
-            "query": {
-                "type": "string",
-                "description": (
-                    "The file the user wants (free-text name/topic, e.g. "
-                    "'earnings pdf' or 'inbound...pdf')."
-                ),
-            }
-        },
-        required=["query"],
-        handler=_read_drive_doc,
-    ),
+        name=name,
+        description=description,
+        parameters={param: dict(_TOOL_PARAM_TYPES[ptype]) for param, ptype in params.items()},
+        required=list(required),
+        handler=_handler_for(name),
+    )
+    for name, description, params, required in _TOOL_SPECS
 ]
 
 
