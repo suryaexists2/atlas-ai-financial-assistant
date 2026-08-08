@@ -156,7 +156,7 @@ class UpdateProcessor:
             message_id = await conversation_service.persist_incoming_message(
                 uow, conversation_id, normalized
             )
-            await uow.commit()
+            # await uow.commit()  # TEMP-REVERT
 
         # 4) Reply through the outbox (never direct to Telegram here).
         if not self._echo_mode:
@@ -206,6 +206,10 @@ class UpdateProcessor:
                 },
                 priority=100,
             )
+            # Commit immediately so the status row is visible to the outbox
+            # worker BEFORE the (slow) LLM turn starts; otherwise the bubble
+            # only surfaces right before the final reply.
+            await uow.commit()
         if message.is_media and message_id is not None:
             await self._ingest_media(uow, message, message_id)
         reply_text: str | None = None

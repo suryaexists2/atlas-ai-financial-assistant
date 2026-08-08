@@ -2,8 +2,11 @@
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.domain.entities import OutboundMessage
+from app.infrastructure.db.base import Base
+from app.infrastructure.db.session import build_session_factory
 from app.infrastructure.db.uow import UnitOfWork
 from app.interfaces.telegram.processor import UpdateProcessor
 from app.interfaces.telegram.sanitize import sanitize_reply
@@ -224,6 +227,49 @@ async def test_leaky_composer_reply_is_sanitized_before_outbox(session_factory):
         assert len(text_rows) == 1
         assert "get_market_quote" not in text_rows[0].payload["text"]
         assert text_rows[0].payload["text"] == "Nvidia is at $218.99 today."
+
+
+@pytest.mark.asyncio
+async def test_status_committed_before_composer_runs(tmp_path):
+    """Regression: the status bubble must be committed to the DB before the
+    composer (the LLM turn) starts, so the outbox worker can deliver it right
+    away instead of only right before the final reply.
+
+    Uses a fresh file-backed engine: each session gets its own connection, so a
+    separate session can only observe COMMITTED rows. (The shared StaticPool of
+    the test fixture leaks uncommitted writes between sessions and would make
+    this check meaningless.) The probe happens INSIDE the composer (the exact
+    LLM-turn boundary); results are recorded and asserted after the turn, since
+    a failed assertion inside the composer is swallowed by the processor's
+    fallback handling.
+    """
+    db = tmp_path / "status_probe.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    probe_factory = build_session_factory(engine)
+
+    probe_result: dict = {}
+
+    async def checking_composer(ctx):
+        async with UnitOfWork(probe_factory) as probe:
+            rows = (await probe.session.execute(select(OutboundMessage))).scalars().all()
+            probe_result["statuses"] = [
+                r for r in rows if r.payload.get("type") == "status"
+            ]
+        return "final reply"
+
+    processor = UpdateProcessor(probe_factory, checking_composer)
+    payload = tg_text_update(update_id=50, chat_id=777, message_id=90, text="TSLA price?")
+    assert (
+        await processor.process_update(payload, source="webhook", correlation_id="c-status-1")
+        is True
+    )
+    await engine.dispose()
+
+    statuses = probe_result.get("statuses", [])
+    assert len(statuses) == 1, "status row must be committed before composer runs"
+    assert statuses[0].payload["correlation_id"] == "c-status-1"
 
 
 def test_status_text_is_context_aware():
