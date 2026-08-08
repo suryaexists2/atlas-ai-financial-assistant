@@ -9,6 +9,7 @@ standard `tools`/`tool_calls` shape, with bounded retries on transient errors
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import random
 import time
@@ -30,7 +31,11 @@ _GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/comp
 
 # Serialises gateway completions so concurrent turns cannot burst the same
 # per-minute TPM window on the active key (see FailoverGateway docstring).
+# The lock is module-global, so nested FailoverGateways (primary -> backup)
+# must not re-acquire it or the chain deadlocks forever: asyncio.Lock is not
+# reentrant. The contextvar records whether THIS task already holds the lock.
 _COMPLETION_LOCK = asyncio.Lock()
+_HOLDING_LOCK = contextvars.ContextVar("completion_lock_holding", default=False)
 
 
 class LLMGatewayError(RuntimeError):
@@ -431,13 +436,25 @@ class FailoverGateway(LLMGateway):
         max_tokens: int = 600,
         temperature: float = 0.3,
     ) -> LLMResponse:
-        async with _COMPLETION_LOCK:
+        holding = _HOLDING_LOCK.get()
+        if holding:
             return await self._run(
                 messages,
                 tools=tools,
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
+        async with _COMPLETION_LOCK:
+            _HOLDING_LOCK.set(True)
+            try:
+                return await self._run(
+                    messages,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+            finally:
+                _HOLDING_LOCK.set(False)
 
     async def _run(
         self,
@@ -477,5 +494,6 @@ __all__ = [
     "LLMGatewayTransientError",
     "OpenRouterGateway",
     "GroqGateway",
+    "GeminiGateway",
     "FailoverGateway",
 ]

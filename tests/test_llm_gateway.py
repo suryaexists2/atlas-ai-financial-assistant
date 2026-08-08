@@ -599,6 +599,30 @@ async def test_gemini_gateway_is_the_backup_when_primary_fails():
 
 
 @pytest.mark.asyncio
+async def test_nested_failover_chain_does_not_deadlock():
+    """The Groq -> Gemini -> OpenRouter chain is a FailoverGateway inside a
+    FailoverGateway. The shared completion lock must not be re-acquired by the
+    nested backup, or every fallback would hang forever."""
+    import asyncio
+
+    primary = _FakeGateway(error=LLMGatewayError("groq bucket exhausted"))
+    mid = _FakeGateway(content="via gemini tier")
+
+    def dead_handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("OpenRouter tier should never be reached")
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(dead_handler))
+    openrouter = GeminiGateway("dead-key", "gemini-2.0-flash", http=http)
+    nested = FailoverGateway(mid, openrouter)
+    gateway = FailoverGateway(primary, nested)
+
+    response = await asyncio.wait_for(
+        gateway.complete([{"role": "user", "content": "hi"}]), timeout=5.0
+    )
+    assert response.content == "via gemini tier"
+
+
+@pytest.mark.asyncio
 async def test_groq_gateway_raises_when_all_keys_exhausted(monkeypatch):
     from app.infrastructure.llm import keys as keys_module
 
