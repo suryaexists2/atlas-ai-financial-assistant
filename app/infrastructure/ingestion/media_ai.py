@@ -14,6 +14,7 @@ asking the model to both describe the image and transcribe any readable text
 from __future__ import annotations
 
 import base64
+import re
 
 import httpx
 
@@ -22,6 +23,16 @@ from app.application.ingestion.types import FileData
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Qwen (and other reasoning models) wrap their reasoning in <think>...</think>.
+# The reasoning is not the deliverable: strip it so the extracted content is the
+# actual description/OCR text.
+_REASONING_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _strip_reasoning(text: str) -> str:
+    cleaned = _REASONING_RE.sub("", text).strip()
+    return cleaned or text.strip()
 
 _AUDIO_TRANSCRIPTIONS_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
 _CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -137,7 +148,7 @@ class OpenRouterMediaAI:
         text = ((choice.get("message") or {}).get("content") or "").strip()
         if not text:
             raise RuntimeError("vision returned empty description")
-        return text
+        return _strip_reasoning(text)
 
     async def _post(self, url: str, body: dict) -> dict:
         headers = {
@@ -242,7 +253,7 @@ class GroqVision:
         text = ((choice.get("message") or {}).get("content") or "").strip()
         if not text:
             raise RuntimeError("Groq vision returned empty description")
-        return text
+        return _strip_reasoning(text)
 
 
 class VisionFallback:

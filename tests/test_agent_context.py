@@ -103,6 +103,30 @@ async def test_context_includes_watchlist_and_memories(uow, session_factory, dem
 
 
 @pytest.mark.asyncio
+async def test_context_keeps_full_media_content(uow, demo_user):
+    """Regression: the 400-char history cap must not truncate media messages —
+    the vision/STT extraction is the message's whole point, and its first chars
+    may be a model's reasoning block rather than the content."""
+    user_id = demo_user["user_id"]
+    async with uow:
+        conversation = await uow.conversations.create(user_id)
+        long = "[image contents]\n<think>reasoning that must not survive</think>\n" + (
+            "chart detail: sales by year and country " * 40
+        )
+        assert len(long) > 400
+        await uow.conversations.add_message(
+            conversation.id, role="user", content=long, content_type="image"
+        )
+        await uow.commit()
+        conversation_id = conversation.id
+
+    async with uow:
+        messages = await build_messages(uow, user_id=user_id, conversation_id=conversation_id)
+    user_msgs = [m["content"] for m in messages if m["role"] == "user"]
+    assert user_msgs and user_msgs[0] == long
+
+
+@pytest.mark.asyncio
 async def test_context_skips_empty_and_tool_messages(uow, demo_user):
     user_id = demo_user["user_id"]
     async with uow:

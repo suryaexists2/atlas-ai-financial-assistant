@@ -523,6 +523,39 @@ async def test_groq_vision_empty_raises():
             await vision.describe(data)
 
 
+async def test_groq_vision_strips_reasoning_block():
+    """Qwen-style <think> reasoning is model chatter, not the deliverable: it
+    must not leak into the extracted document content."""
+    import httpx
+
+    from app.infrastructure.ingestion.media_ai import GroqVision
+
+    transport = httpx.MockTransport(
+        lambda req: httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                "<think>The user wants a description of the chart.\n"
+                                "It contains sales figures.</think>\n\n"
+                                "The chart is titled \"Sales by Year and Country\"."
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+    )
+    async with httpx.AsyncClient(transport=transport) as http:
+        vision = GroqVision("groq-test-key", http=http)
+        data = FileData(raw=b"png-bytes", mime_type="image/png")
+        result = await vision.describe(data)
+    assert "think" not in result
+    assert result.startswith('The chart is titled "Sales by Year and Country".')
+
+
 async def test_groq_vision_http_error_raises():
     import httpx
 

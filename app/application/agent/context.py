@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from app.domain.enums import ContentType
 from app.infrastructure.db.uow import UnitOfWork
 
 SYSTEM_PROMPT = """You are Atlas, an AI financial assistant in a Telegram chat. Your
@@ -162,7 +163,12 @@ async def build_messages(
                 if label:
                     messages.append({"role": "user", "content": label})
             continue
-        if len(content) > _MAX_HISTORY_CHARS:
+        if len(content) > _MAX_HISTORY_CHARS and message.content_type in (None, ContentType.TEXT):
+            # Cap only plain chat history. Media messages carry the vision/STT
+            # extraction as their whole point: truncating them (the first 400
+            # chars can be a model's reasoning block, not the content) makes the
+            # agent believe the attachment was never read. Media content is
+            # already bounded upstream by the ingestion excerpt budget.
             content = content[: _MAX_HISTORY_CHARS].rstrip() + " …"
         messages.append({"role": role, "content": content})
 
