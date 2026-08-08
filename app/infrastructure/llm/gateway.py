@@ -71,6 +71,10 @@ class OpenRouterGateway(LLMGateway):
         self._skip_until: dict[str, float] = {}
         # registry-managed models that accept `reasoning: {"enabled": false}`.
         self._reasoning_off: dict[str, dict[str, Any]] = {}
+        # per-model extra request body (e.g. Groq qwen needs reasoning off and
+        # a parsed reasoning format for tool calling; gpt-oss must not get
+        # either parameter).
+        self._extra_body: dict[str, dict[str, Any]] = {}
 
     async def _sync_registry(self) -> None:
         if self._registry is None:
@@ -127,6 +131,7 @@ class OpenRouterGateway(LLMGateway):
             body["model"] = model
             if model in self._reasoning_off:
                 body["reasoning"] = self._reasoning_off[model]
+            body.update(self._extra_body.get(model, {}))
             attempt = 0
             while True:
                 attempt += 1
@@ -270,8 +275,11 @@ class GroqGateway(OpenRouterGateway):
     """Free chat completions via Groq's OpenAI-compatible API.
 
     Same protocol and failover logic as the OpenRouter gateway, but pointed at
-    Groq's free tier (LLaMA 3.3 70B versatile / 3.1 8B instant). No free-model
-    registry — the Groq catalogue is stable.
+    Groq (gpt-oss / qwen routes). No free-model registry — the Groq catalogue
+    is stable. Qwen models get `reasoning_effort: "none"` (their thinking eats
+    the reply budget and is not the deliverable) plus `reasoning_format:
+    "parsed"`, which Groq requires for tool calling; gpt-oss models must not
+    receive either parameter, so they are applied per-model.
     """
 
     def __init__(
@@ -298,6 +306,12 @@ class GroqGateway(OpenRouterGateway):
             rate_limit_skip_seconds=rate_limit_skip_seconds,
             registry=None,
         )
+        for candidate in self._models:
+            if "qwen" in candidate:
+                self._extra_body[candidate] = {
+                    "reasoning_effort": "none",
+                    "reasoning_format": "parsed",
+                }
 
 
 class FailoverGateway(LLMGateway):

@@ -61,11 +61,14 @@ class Settings(BaseSettings):
     # Groq chat stack (free tier): primary engine. `openai/gpt-oss-120b` is
     # Groq's current 120B open-weights route with reliable tool calling
     # (verified: emits get_market_quote correctly); the legacy llama-3.3-70b-
-    # versatile route was hitting its per-day token cap. No fallback on Groq —
-    # when the primary rate-limits the gateway fails over to the OpenRouter
-    # free chain instead.
+    # versatile route was hitting its per-day token cap. When the primary
+    # rate-limits (it has its own 200K tokens/day bucket), the fallback is
+    # `qwen/qwen3.6-27b`: Groq's multimodal chat route with a *separate* daily
+    # bucket and full tool-calling/JSON support, so turns keep flowing even
+    # when the gpt-oss bucket is exhausted. If both fail the gateway fails
+    # over to the OpenRouter free chain instead.
     groq_llm_model: str = "openai/gpt-oss-120b"
-    groq_llm_fallback: str | None = None
+    groq_llm_fallback: str | None = "qwen/qwen3.6-27b"
     # When true, the gateway periodically discovers new `:free` models from the
     # public OpenRouter catalogue and appends the compatible ones to the chain.
     llm_dynamic_free_models: bool = True

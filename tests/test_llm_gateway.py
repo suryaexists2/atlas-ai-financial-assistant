@@ -460,6 +460,48 @@ async def test_groq_gateway_uses_groq_endpoint():
 
 
 @pytest.mark.asyncio
+async def test_groq_gateway_uses_qwen_fallback_and_tunes_reasoning_per_model():
+    """When gpt-oss rate-limits, the Groq chain falls back to qwen3.6-27b. The
+    qwen model must get `reasoning_effort: none` + `reasoning_format: parsed`
+    (required for tool calling) while gpt-oss keeps its vanilla body."""
+    requested: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requested.append(body)
+        if body["model"] == "openai/gpt-oss-120b":
+            return httpx.Response(429, text="tokens per day exceeded")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "via qwen"}}],
+                "model": body["model"],
+            },
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    gateway = GroqGateway(
+        "groq-key",
+        "openai/gpt-oss-120b",
+        max_retries=1,
+        fallback_models=["qwen/qwen3.6-27b"],
+        http=http,
+    )
+    response = await gateway.complete(
+        [{"role": "user", "content": "hi"}], tools=[{"type": "function"}]
+    )
+    assert response.content == "via qwen"
+
+    gpt_oss = next(b for b in requested if b["model"] == "openai/gpt-oss-120b")
+    qwen = next(b for b in requested if b["model"] == "qwen/qwen3.6-27b")
+    assert "reasoning_effort" not in gpt_oss
+    assert "reasoning_format" not in gpt_oss
+    assert qwen["reasoning_effort"] == "none"
+    assert qwen["reasoning_format"] == "parsed"
+    assert "tools" in qwen
+
+
+@pytest.mark.asyncio
 async def test_failover_uses_backup_when_primary_fails():
     primary = _FakeGateway(error=LLMGatewayError("primary exploded"))
     backup = _FakeGateway(content="from backup")
