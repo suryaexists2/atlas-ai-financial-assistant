@@ -58,6 +58,38 @@ def _build_worker(
     )
 
 
+def _groq_keys(settings: Settings) -> list[str]:
+    """All usable Groq API keys.
+
+    Prefers the `GROQ_API_KEYS` list; falls back to `GROQ_API_KEY` split on
+    commas (a whole list pasted into the single-key variable still works), and
+    trims whitespace and surrounding quotes from every entry.
+    """
+    raw = list(settings.groq_api_keys) or (
+        [settings.groq_api_key] if settings.groq_api_key else []
+    )
+    keys: list[str] = []
+    for item in raw:
+        for part in str(item).split(","):
+            part = part.strip().strip('"').strip("'")
+            if part:
+                keys.append(part)
+    return keys
+
+
+def _log_groq_key_pool(groq_keys: list[str], purpose: str) -> None:
+    """Masked startup log: count + key prefixes only, never the secrets."""
+    if not groq_keys:
+        return
+    prefixes = [f"{k[:8]}…{k[-4:]}" for k in groq_keys]
+    logger.info(
+        "groq_key_pool_ready",
+        purpose=purpose,
+        count=len(groq_keys),
+        keys=prefixes,
+    )
+
+
 def _build_media_ingestor(settings: Settings, bot):
     """Builds the media->text pipeline (download + parse + chunk). AI parsers
     (voice STT, image vision) activate only when credentials are present;
@@ -85,13 +117,12 @@ def _build_media_ingestor(settings: Settings, bot):
         vision = media_ai
     # Image vision falls back to the free Groq tier when the OpenRouter route
     # fails (402 on exhausted balance). STT stays as configured below.
-    groq_keys = settings.groq_api_keys or (
-        [settings.groq_api_key] if settings.groq_api_key else []
-    )
+    groq_keys = _groq_keys(settings)
     if groq_keys:
         from app.infrastructure.ingestion.media_ai import GroqVision, VisionFallback
         from app.infrastructure.llm.keys import GroqKeyPool
 
+        _log_groq_key_pool(groq_keys, "media")
         groq_key_pool = GroqKeyPool(groq_keys)
         groq_vision = GroqVision(
             groq_keys[0],
@@ -175,11 +206,11 @@ def _build_chat_gateway(settings: Settings):
     )
 
     groq_gateway = None
-    groq_keys = settings.groq_api_keys or (
-        [settings.groq_api_key] if settings.groq_api_key else []
-    )
+    groq_keys = _groq_keys(settings)
     if groq_keys:
         from app.infrastructure.llm.keys import GroqKeyPool
+
+        _log_groq_key_pool(groq_keys, "chat")
 
         groq_gateway = GroqGateway(
             groq_keys[0],
