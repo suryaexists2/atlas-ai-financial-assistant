@@ -365,12 +365,20 @@ class FailoverGateway(LLMGateway):
             )
         except LLMGatewayError as primary_error:
             logger.warning("llm_provider_failover", error=str(primary_error)[:200])
-            return await self._backup.complete(
-                messages,
-                tools=tools,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
+            try:
+                return await self._backup.complete(
+                    messages,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+            except LLMGatewayError as backup_error:
+                # Keep the primary's reason visible: two independent providers
+                # failing usually hides a config problem (e.g. bad key list),
+                # which the caller otherwise never sees.
+                raise LLMGatewayError(
+                    f"{backup_error}; primary provider: {primary_error}"
+                ) from backup_error
 
 
 __all__ = [

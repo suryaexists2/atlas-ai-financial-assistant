@@ -592,6 +592,7 @@ async def test_failover_raises_when_both_fail():
     with pytest.raises(LLMGatewayError) as exc_info:
         await gateway.complete([{"role": "user", "content": "hi"}])
     assert "backup exploded" in str(exc_info.value)
+    assert "primary exploded" in str(exc_info.value)
     assert primary.calls == 1
     assert backup.calls == 1
 
