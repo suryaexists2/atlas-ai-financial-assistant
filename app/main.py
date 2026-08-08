@@ -264,7 +264,7 @@ def _build_agent_composer(settings: Settings, media_pipeline=None) -> AgentCompo
     from app.application.agent.tools import default_registry
     from app.application.onboarding import OnboardingEngine
 
-    if not settings.openrouter_api_key and not settings.groq_api_key:
+    if not settings.openrouter_api_key and not settings.groq_api_key and not settings.groq_api_keys:
         logger.warning("agent_disabled_no_llm_key")
         return None
 

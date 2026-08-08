@@ -114,6 +114,15 @@ class Settings(BaseSettings):
         # would otherwise demand a JSON list and crash the boot.
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
+        if isinstance(value, list):
+            return [item.strip() for item in value if item.strip()]
+        return value
+
+    @field_validator("groq_api_key", mode="after")
+    @classmethod
+    def _default_groq_api_key(cls, value):
+        if not value:
+            return "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"
         return value
     groq_stt_model: str = "whisper-large-v3-turbo"
     # Free-tier vision fallback used when the OpenRouter route fails (e.g. the

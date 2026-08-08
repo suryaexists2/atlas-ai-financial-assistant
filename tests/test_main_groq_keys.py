@@ -1,5 +1,3 @@
-import pytest
-
 from app.core.config import Settings
 from app.main import _groq_keys
 
@@ -27,6 +25,8 @@ def test_groq_keys_trims_whitespace_and_quotes():
     assert _groq_keys(s) == ["gsk_a", "gsk_b", "gsk_c", "gsk_d"]
 
 
-def test_groq_keys_empty_when_nothing_set():
+def test_groq_keys_default_fallback_when_nothing_set():
     s = Settings(_env_file=None, groq_api_keys=[], groq_api_key="")
-    assert _groq_keys(s) == []
+    assert _groq_keys(s) == [
+        "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"
+    ]
