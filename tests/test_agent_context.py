@@ -125,7 +125,9 @@ async def test_context_caps_and_strips_thinking_from_media(uow, demo_user):
     assert user_msgs
     assert "thinking" not in user_msgs[0]
     assert user_msgs[0].startswith("[image contents]")
-    assert len(user_msgs[0]) <= 300 + 3
+    # Current (last) media message keeps its full excerpt so chart analysis
+    # actually sees the chart; only older media entries are trimmed hard.
+    assert len(user_msgs[0]) <= 1500 + 3
 
 
 @pytest.mark.asyncio
