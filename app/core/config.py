@@ -101,8 +101,10 @@ class Settings(BaseSettings):
     groq_api_key: str | None = Field(default=None, repr=False)
     groq_stt_model: str = "whisper-large-v3-turbo"
     # Free-tier vision fallback used when the OpenRouter route fails (e.g. the
-    # account balance is exhausted and every model 402s).
-    groq_vision_model: str = "meta-llama/llama-3.2-11b-vision-preview"
+    # account balance is exhausted and every model 402s). Llama 4 Scout is the
+    # current free vision-capable route on Groq (llama-3.2-vision-preview was
+    # deprecated upstream).
+    groq_vision_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
     stt_timeout_seconds: float = 90.0
     vision_timeout_seconds: float = 60.0
     media_download_timeout_seconds: float = 60.0

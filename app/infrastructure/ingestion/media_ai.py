@@ -202,7 +202,7 @@ class GroqVision:
         self,
         api_key: str,
         *,
-        model: str = "meta-llama/llama-3.2-11b-vision-preview",
+        model: str = "meta-llama/llama-4-scout-17b-16e-instruct",
         timeout_seconds: float = 60.0,
         http: httpx.AsyncClient | None = None,
     ) -> None:
